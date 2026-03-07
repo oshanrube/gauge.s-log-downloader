@@ -91,6 +91,37 @@
             color: #a5b4fc;
         }
 
+        .options-box {
+            margin-bottom: 20px;
+        }
+
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .checkbox-wrapper input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #6366f1;
+        }
+
+        .checkbox-label {
+            font-size: 0.9rem;
+            color: #e2e8f0;
+            cursor: pointer;
+        }
+
+        .checkbox-label-desc {
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-left: 28px;
+        }
+
         #downloadBtn {
             width: 100%;
             padding: 14px 24px;
@@ -435,6 +466,14 @@
             GET <span>http://192.168.4.1/list?dir=/logs</span>
         </div>
 
+        <div class="options-box">
+            <label class="checkbox-wrapper">
+                <input type="checkbox" id="deleteAfterDownload" />
+                <span class="checkbox-label">Delete after download</span>
+            </label>
+            <div class="checkbox-label-desc">Remove files from device after successful download</div>
+        </div>
+
         <button id="downloadBtn" onclick="startDownload()">
             <svg viewBox="0 0 24 24">
                 <path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z" />
@@ -472,6 +511,26 @@
     <script>
         const LIST_URL = 'http://192.168.4.1/list?dir=/logs';
         const BASE_URL = 'http://192.168.4.1/logs/';
+        const DELETE_URL = 'http://192.168.4.1/edit';
+
+        async function deleteFile(filePath) {
+            const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+            const body = `------${boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n${filePath}\r\n------${boundary}--\r\n`;
+
+            try {
+                const res = await fetch(DELETE_URL, {
+                    method: 'DELETE',
+                    headers: {
+                        'Content-Type': `multipart/form-data; boundary=----${boundary}`
+                    },
+                    body: body
+                });
+                return res.ok;
+            } catch (err) {
+                console.error('Delete failed:', err);
+                return false;
+            }
+        }
 
         function now() {
             return new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -589,6 +648,8 @@
                 let headerLine = null;
                 let groupErr = false;
 
+                const deleteAfter = document.getElementById('deleteAfterDownload').checked;
+
                 for (const name of members) {
                     const url = BASE_URL + encodeURIComponent(name);
                     try {
@@ -609,6 +670,17 @@
                         }
 
                         log(`&nbsp;&nbsp;✓ ${name} (${(text.length / 1024).toFixed(1)} KB)`, 'success');
+
+                        // Delete file if option is enabled
+                        if (deleteAfter) {
+                            const filePath = `/logs/${name}`;
+                            const deleted = await deleteFile(filePath);
+                            if (deleted) {
+                                log(`&nbsp;&nbsp;&nbsp;&nbsp;🗑 Deleted ${name} from device`, 'info');
+                            } else {
+                                log(`&nbsp;&nbsp;&nbsp;&nbsp;⚠ Failed to delete ${name}`, 'warn');
+                            }
+                        }
                     } catch (err) {
                         log(`&nbsp;&nbsp;✗ ${name} — ${err.message}`, 'error');
                         groupErr = true;
