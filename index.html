@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gauge.S File Downloader</title>
+    <link rel="manifest" href="./manifest.json" />
+    <meta name="theme-color" content="#6366f1" />
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0f1117;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .card {
+            background: linear-gradient(135deg, #1a1d2e 0%, #16192a 100%);
+            border: 1px solid #2d3154;
+            border-radius: 20px;
+            padding: 40px 48px;
+            width: 100%;
+            max-width: 680px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(99, 102, 241, 0.08);
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 8px;
+        }
+
+        .icon-wrap {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+        }
+
+        .icon-wrap svg {
+            width: 24px;
+            height: 24px;
+            fill: #fff;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #f1f5f9;
+        }
+
+        .subtitle {
+            font-size: 0.875rem;
+            color: #64748b;
+            margin-bottom: 32px;
+            padding-left: 62px;
+        }
+
+        .endpoint-box {
+            background: #0d0f1a;
+            border: 1px solid #1e2340;
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 0.78rem;
+            color: #7c85c5;
+            font-family: 'Courier New', monospace;
+            margin-bottom: 28px;
+            word-break: break-all;
+        }
+
+        .endpoint-box span {
+            color: #a5b4fc;
+        }
+
+        #downloadBtn {
+            width: 100%;
+            padding: 14px 24px;
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            color: #fff;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.35);
+        }
+
+        #downloadBtn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 30px rgba(99, 102, 241, 0.5);
+        }
+
+        #downloadBtn:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        #downloadBtn:disabled {
+            opacity: 0.65;
+            cursor: not-allowed;
+        }
+
+        #downloadBtn svg {
+            width: 20px;
+            height: 20px;
+            fill: #fff;
+            flex-shrink: 0;
+        }
+
+        /* Progress Section */
+        #progressSection {
+            display: none;
+            margin-top: 28px;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            font-size: 0.85rem;
+        }
+
+        .progress-label {
+            color: #94a3b8;
+            font-weight: 500;
+        }
+
+        .progress-count {
+            color: #a5b4fc;
+            font-weight: 600;
+        }
+
+        .progress-bar-bg {
+            background: #1e2340;
+            border-radius: 100px;
+            height: 8px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #6366f1, #8b5cf6);
+            border-radius: 100px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        /* Log */
+        .log-label {
+            font-size: 0.78rem;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        #logBox {
+            background: #0a0c16;
+            border: 1px solid #1e2340;
+            border-radius: 10px;
+            padding: 14px 16px;
+            height: 220px;
+            overflow-y: auto;
+            font-size: 0.78rem;
+            font-family: 'Courier New', monospace;
+            line-height: 1.7;
+        }
+
+        #logBox::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        #logBox::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #logBox::-webkit-scrollbar-thumb {
+            background: #2d3154;
+            border-radius: 3px;
+        }
+
+        .log-entry {
+            display: flex;
+            gap: 10px;
+        }
+
+        .log-time {
+            color: #374151;
+            flex-shrink: 0;
+        }
+
+        .log-success {
+            color: #34d399;
+        }
+
+        .log-error {
+            color: #f87171;
+        }
+
+        .log-info {
+            color: #60a5fa;
+        }
+
+        .log-warn {
+            color: #fbbf24;
+        }
+
+        /* Summary */
+        .summary {
+            display: none;
+            margin-top: 16px;
+            background: #0d0f1a;
+            border: 1px solid #1e2340;
+            border-radius: 10px;
+            padding: 14px 18px;
+            font-size: 0.85rem;
+            display: none;
+            gap: 24px;
+        }
+
+        .summary.visible {
+            display: flex;
+            flex-wrap: wrap;
+        }
+
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stat-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .dot-success {
+            background: #34d399;
+        }
+
+        .dot-error {
+            background: #f87171;
+        }
+
+        .stat-val {
+            font-weight: 700;
+            color: #f1f5f9;
+        }
+
+        .stat-key {
+            color: #64748b;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="card">
+        <div class="header">
+            <div class="icon-wrap">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z" />
+                </svg>
+            </div>
+            <h1>Gauge.S Downloader</h1>
+        </div>
+        <p class="subtitle">Fetches file list from device, groups &amp; concatenates CSV logs by base name</p>
+
+        <div class="endpoint-box">
+            GET <span>http://192.168.4.1/list?dir=/logs</span>
+        </div>
+
+        <button id="downloadBtn" onclick="startDownload()">
+            <svg viewBox="0 0 24 24">
+                <path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z" />
+            </svg>
+            Merge &amp; Download
+        </button>
+
+        <div id="progressSection">
+            <div class="progress-header">
+                <span class="progress-label">Downloading files…</span>
+                <span class="progress-count" id="progressCount">0 / 0</span>
+            </div>
+            <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="progressFill"></div>
+            </div>
+
+            <div class="log-label">Activity Log</div>
+            <div id="logBox"></div>
+
+            <div class="summary" id="summary">
+                <div class="stat">
+                    <span class="stat-dot dot-success"></span>
+                    <span class="stat-val" id="okCount">0</span>
+                    <span class="stat-key">downloaded</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-dot dot-error"></span>
+                    <span class="stat-val" id="errCount">0</span>
+                    <span class="stat-key">failed</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const LIST_URL = 'http://192.168.4.1/list?dir=/logs';
+        const BASE_URL = 'http://192.168.4.1/logs/';
+
+        function now() {
+            return new Date().toLocaleTimeString('en-GB', { hour12: false });
+        }
+
+        function log(msg, type = 'info') {
+            const box = document.getElementById('logBox');
+            const row = document.createElement('div');
+            row.className = 'log-entry';
+            row.innerHTML = `<span class="log-time">[${now()}]</span><span class="log-${type}">${msg}</span>`;
+            box.appendChild(row);
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function setProgress(done, total) {
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+            document.getElementById('progressFill').style.width = pct + '%';
+            document.getElementById('progressCount').textContent = `${done} / ${total}`;
+        }
+
+        function triggerDownload(content, filename) {
+            const blob = new Blob([content], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+        }
+
+        /**
+         * Derive the merged output filename from a member filename.
+         * Rule: strip the trailing "-<digits>" segment just before ".csv".
+         *   Gauge.S-1.csv            → Gauge.S.csv
+         *   Gauge.S_26-02-28_06-11.csv → Gauge.S_26-02-28_06.csv
+         */
+        function groupKey(name) {
+            // Remove extension, strip trailing -<digits>, re-add .csv
+            return name.replace(/-\d+\.csv$/i, '.csv');
+        }
+
+        async function startDownload() {
+            const btn = document.getElementById('downloadBtn');
+            const progressSection = document.getElementById('progressSection');
+            const summary = document.getElementById('summary');
+
+            btn.disabled = true;
+            btn.innerHTML = `
+      <svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite"><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>
+      Fetching file list…`;
+
+            progressSection.style.display = 'block';
+            summary.classList.remove('visible');
+            document.getElementById('logBox').innerHTML = '';
+
+            // ── Step 1: Fetch file list ────────────────────────────────────────────────
+            let files;
+            try {
+                log(`Fetching file list from <span style="color:#a5b4fc">${LIST_URL}</span>`, 'info');
+                const res = await fetch(LIST_URL);
+                if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                const json = await res.json();
+                files = json.filter(item => item.type === 'file');
+                log(`Found <strong>${files.length}</strong> file(s)`, 'success');
+            } catch (err) {
+                log(`Failed to fetch file list: ${err.message}`, 'error');
+                btn.disabled = false;
+                btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download`;
+                return;
+            }
+
+            // ── Step 2: Group files by output name ────────────────────────────────────
+            // Map: outputName → [ ...member filenames in order ]
+            const groups = new Map();
+            for (const f of files) {
+                const key = groupKey(f.name);
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(f.name);
+            }
+
+            log(`Grouped into <strong>${groups.size}</strong> output file(s)`, 'info');
+            for (const [out, members] of groups) {
+                log(`&nbsp;&nbsp;↳ <span style="color:#a5b4fc">${out}</span> ← ${members.length} part(s)`, 'info');
+            }
+
+            // ── Step 3: Fetch, concatenate, and download each group ───────────────────
+            btn.innerHTML = `
+      <svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite"><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>
+      Merging…`;
+
+            // Total fetch operations across all groups
+            const totalFetches = files.length;
+            let fetchesDone = 0;
+            let okGroups = 0, errGroups = 0;
+
+            for (const [outName, members] of groups) {
+                log(`── Merging → <strong>${outName}</strong>`, 'info');
+                const parts = [];
+                let headerLine = null;
+                let groupErr = false;
+
+                for (const name of members) {
+                    const url = BASE_URL + encodeURIComponent(name);
+                    try {
+                        const res = await fetch(url);
+                        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                        const text = await res.text();
+                        const lines = text.split(/\r?\n/);
+
+                        if (headerLine === null) {
+                            // First part: keep everything including the header
+                            headerLine = lines[0];
+                            parts.push(text.trimEnd());
+                        } else {
+                            // Subsequent parts: skip the header row if it matches
+                            const body = (lines[0] === headerLine ? lines.slice(1) : lines)
+                                .join('\n').trimEnd();
+                            if (body) parts.push(body);
+                        }
+
+                        log(`&nbsp;&nbsp;✓ ${name} (${(text.length / 1024).toFixed(1)} KB)`, 'success');
+                    } catch (err) {
+                        log(`&nbsp;&nbsp;✗ ${name} — ${err.message}`, 'error');
+                        groupErr = true;
+                    }
+
+                    fetchesDone++;
+                    setProgress(fetchesDone, totalFetches);
+                    await new Promise(r => setTimeout(r, 80));
+                }
+
+                // Save the merged file
+                const merged = parts.join('\n') + '\n';
+                triggerDownload(merged, outName);
+
+                if (groupErr) {
+                    errGroups++;
+                    log(`⚠ ${outName} saved with some missing parts`, 'warn');
+                } else {
+                    okGroups++;
+                    log(`✓ ${outName} saved (${(merged.length / 1024).toFixed(1)} KB total)`, 'success');
+                }
+
+                // Brief pause between group downloads
+                await new Promise(r => setTimeout(r, 200));
+            }
+
+            // ── Step 4: Done ─────────────────────────────────────────────────────────
+            log(`─── Done: ${okGroups} file(s) OK, ${errGroups} with errors ───`, errGroups ? 'warn' : 'success');
+
+            document.getElementById('okCount').textContent = okGroups;
+            document.getElementById('errCount').textContent = errGroups;
+            summary.classList.add('visible');
+
+            btn.disabled = false;
+            btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download Again`;
+        }
+
+        // Spinner keyframe
+        const style = document.createElement('style');
+        style.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
+        document.head.appendChild(style);
+    </script>
+
+    <script>
+        // Register service worker for offline support
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('[SW] Registered, scope:', reg.scope))
+                    .catch(err => console.warn('[SW] Registration failed:', err));
+            });
+        }
+    </script>
+
+</body>
+
+</html>
