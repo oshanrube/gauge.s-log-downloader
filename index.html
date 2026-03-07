@@ -279,10 +279,146 @@
         .stat-key {
             color: #64748b;
         }
+
+        /* PWA Install Prompt */
+        #installPrompt {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, #1a1d2e 0%, #16192a 100%);
+            border: 1px solid #2d3154;
+            border-radius: 16px;
+            padding: 20px 24px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(99, 102, 241, 0.1);
+            display: none;
+            align-items: center;
+            gap: 16px;
+            max-width: 90%;
+            width: 420px;
+            z-index: 1000;
+            animation: slideUp 0.3s ease-out;
+        }
+
+        #installPrompt.visible {
+            display: flex;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+
+        .install-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .install-icon svg {
+            width: 20px;
+            height: 20px;
+            fill: #fff;
+        }
+
+        .install-content {
+            flex: 1;
+        }
+
+        .install-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #f1f5f9;
+            margin-bottom: 4px;
+        }
+
+        .install-text {
+            font-size: 0.8rem;
+            color: #94a3b8;
+        }
+
+        .install-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .install-btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .install-btn-primary {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: #fff;
+        }
+
+        .install-btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        }
+
+        .install-btn-secondary {
+            background: transparent;
+            color: #94a3b8;
+        }
+
+        .install-btn-secondary:hover {
+            color: #e2e8f0;
+        }
+
+        @media (max-width: 500px) {
+            #installPrompt {
+                bottom: 16px;
+                padding: 16px 20px;
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .install-actions {
+                width: 100%;
+            }
+
+            .install-btn {
+                flex: 1;
+            }
+        }
     </style>
 </head>
 
 <body>
+
+    <div id="installPrompt">
+        <div class="install-icon">
+            <svg viewBox="0 0 24 24">
+                <path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z" />
+            </svg>
+        </div>
+        <div class="install-content">
+            <div class="install-title">Install Gauge.S Downloader</div>
+            <div class="install-text">Add to home screen for quick access</div>
+        </div>
+        <div class="install-actions">
+            <button class="install-btn install-btn-secondary" onclick="dismissInstallPrompt()">Later</button>
+            <button class="install-btn install-btn-primary" onclick="installApp()">Install</button>
+        </div>
+    </div>
 
     <div class="card">
         <div class="header">
@@ -517,6 +653,49 @@
     </script>
 
     <script>
+        // PWA Install Prompt
+        let deferredPrompt;
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            // Check if user has previously dismissed the prompt
+            const dismissed = localStorage.getItem('installPromptDismissed');
+            if (!dismissed) {
+                // Show install prompt after a short delay
+                setTimeout(() => {
+                    document.getElementById('installPrompt').classList.add('visible');
+                }, 1000);
+            }
+        });
+
+        function installApp() {
+            if (!deferredPrompt) return;
+            
+            deferredPrompt.prompt();
+            deferredPrompt.userChoice.then((choiceResult) => {
+                if (choiceResult.outcome === 'accepted') {
+                    console.log('[PWA] User accepted the install prompt');
+                } else {
+                    console.log('[PWA] User dismissed the install prompt');
+                }
+                deferredPrompt = null;
+                document.getElementById('installPrompt').classList.remove('visible');
+            });
+        }
+
+        function dismissInstallPrompt() {
+            document.getElementById('installPrompt').classList.remove('visible');
+            localStorage.setItem('installPromptDismissed', 'true');
+        }
+
+        // Listen for successful installation
+        window.addEventListener('appinstalled', () => {
+            console.log('[PWA] App was installed successfully');
+            document.getElementById('installPrompt').classList.remove('visible');
+        });
+
         // Register service worker for offline support
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
