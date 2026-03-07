@@ -4,6 +4,8 @@ A lightweight progressive web app (PWA) that connects to a **Gauge.S device** ov
 
 🌐 **Live app:** https://oshanrube.github.io/guage.s-log-downloader/
 
+![Scan to open app](https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://oshanrube.github.io/guage.s-log-downloader/&margin=8)
+
 ---
 
 ## How to Use (Mobile)
