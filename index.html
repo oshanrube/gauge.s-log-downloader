@@ -370,12 +370,27 @@
         /**
          * Derive the merged output filename from a member filename.
          * Rule: strip the trailing "-<digits>" segment just before ".csv".
-         *   Gauge.S-1.csv            → Gauge.S.csv
-         *   Gauge.S_26-02-28_06-11.csv → Gauge.S_26-02-28_06.csv
+         *   Gauge.S-1.csv              → Gauge.S_26-03-07.csv  (date appended)
+         *   Gauge.S_26-02-28_06-11.csv → Gauge.S_26-02-28_06.csv (date already present)
          */
         function groupKey(name) {
-            // Remove extension, strip trailing -<digits>, re-add .csv
-            return name.replace(/-\d+\.csv$/i, '.csv');
+            // Strip the trailing -<digits> part
+            const base = name.replace(/-\d+\.csv$/i, '.csv');
+
+            // Check if the base name already contains a date-like segment
+            // (two-digit groups separated by dashes, e.g. _26-02-28 or _26-02-28_06)
+            const hasDate = /[_-]\d{2}-\d{2}-\d{2}/.test(base);
+
+            if (hasDate) return base;
+
+            // No date found — append today's date as _YY-MM-DD before .csv
+            const now = new Date();
+            const yy = String(now.getFullYear()).slice(-2);
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            const dateSuffix = `_${yy}-${mm}-${dd}`;
+
+            return base.replace(/\.csv$/i, `${dateSuffix}.csv`);
         }
 
         async function startDownload() {
