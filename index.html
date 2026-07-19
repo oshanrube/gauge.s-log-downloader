@@ -6,6 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Gauge.S File Downloader</title>
     <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" type="image/png" href="./icon-192.png" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
     <meta name="theme-color" content="#6366f1" />
     <style>
         *,
@@ -311,6 +313,42 @@
             color: #64748b;
         }
 
+        /* Footer */
+        .footer {
+            margin-top: 28px;
+            padding-top: 16px;
+            border-top: 1px solid #1e2340;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.72rem;
+            color: #475569;
+        }
+
+        .footer .version {
+            font-family: 'Courier New', monospace;
+            color: #64748b;
+        }
+
+        .offline-badge {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            color: #fbbf24;
+        }
+
+        .offline-badge.visible {
+            display: flex;
+        }
+
+        .offline-badge::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #fbbf24;
+        }
+
         /* PWA Install Prompt */
         #installPrompt {
             position: fixed;
@@ -578,9 +616,17 @@
                 </div>
             </div>
         </div>
+
+        <div class="footer">
+            <span class="offline-badge" id="offlineBadge">offline — device requests unavailable</span>
+            <span></span>
+            <span class="version">v<span id="appVersion"></span></span>
+        </div>
     </div>
 
     <script>
+        // Keep in sync with APP_VERSION in sw.js
+        const APP_VERSION = '1.1.0';
         const LIST_URL = 'http://192.168.4.1/list?dir=/logs';
         const BASE_URL = 'http://192.168.4.1/logs/';
         const DELETE_URL = 'http://192.168.4.1/edit';
@@ -854,11 +900,27 @@
             document.getElementById('installPrompt').classList.remove('visible');
         });
 
+        // ── Version display ──────────────────────────────────────────────
+        document.getElementById('appVersion').textContent = APP_VERSION;
+
+        // ── Online/offline indicator ─────────────────────────────────────
+        function updateOnlineStatus() {
+            document.getElementById('offlineBadge')
+                .classList.toggle('visible', !navigator.onLine);
+        }
+        window.addEventListener('online', updateOnlineStatus);
+        window.addEventListener('offline', updateOnlineStatus);
+        updateOnlineStatus();
+
         // Register service worker for offline support
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js')
-                    .then(reg => console.log('[SW] Registered, scope:', reg.scope))
+                    .then(reg => {
+                        console.log('[SW] Registered, scope:', reg.scope);
+                        // Check for an updated shell each time the app opens
+                        reg.update();
+                    })
                     .catch(err => console.warn('[SW] Registration failed:', err));
             });
         }

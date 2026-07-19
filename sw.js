@@ -1,14 +1,20 @@
 // sw.js — Service Worker for Gauge.S Downloader
-// Strategy: cache-first for the app shell (index.html + manifest).
+// Strategy: cache-first for the app shell (index.html + manifest + icons).
 // Network requests to 192.168.4.1 are always sent live (never cached).
+//
+// NOTE: keep APP_VERSION in sync with the one in index.html.
+// Bumping it invalidates the old cache so users pick up shell updates.
 
-const CACHE_NAME = 'gauges-downloader-v1';
+const APP_VERSION = '1.1.0';
+const CACHE_NAME = `gauges-downloader-v${APP_VERSION}`;
 
 // Files that make up the app shell
 const SHELL = [
   './',
   './index.html',
   './manifest.json',
+  './icon-192.png',
+  './icon-512.png',
 ];
 
 // ── Install: pre-cache the app shell ────────────────────────────────────────
@@ -36,13 +42,16 @@ self.addEventListener('activate', event => {
 
 // ── Fetch: cache-first for app shell; bypass cache for device requests ───────
 self.addEventListener('fetch', event => {
+  // Only handle GET — DELETE/POST to the device must never be intercepted
+  if (event.request.method !== 'GET') return;
+
   const url = new URL(event.request.url);
 
   // Never intercept requests going to the gauge device
   if (url.hostname === '192.168.4.1') return;
 
   event.respondWith(
-    caches.match(event.request).then(cached => {
+    caches.match(event.request, { ignoreSearch: true }).then(cached => {
       if (cached) return cached;
 
       // Not in cache — try network, then update cache for same-origin resources
@@ -55,6 +64,12 @@ self.addEventListener('fetch', event => {
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
         }
         return response;
+      }).catch(() => {
+        // Offline and not cached: fall back to the app shell for navigations
+        if (event.request.mode === 'navigate') {
+          return caches.match('./index.html');
+        }
+        return Response.error();
       });
     })
   );
