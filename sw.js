@@ -5,7 +5,7 @@
 // NOTE: keep APP_VERSION in sync with the one in index.html.
 // Bumping it invalidates the old cache so users pick up shell updates.
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const CACHE_NAME = `gauges-downloader-v${APP_VERSION}`;
 
 // Files that make up the app shell
@@ -47,8 +47,10 @@ self.addEventListener('fetch', event => {
 
   const url = new URL(event.request.url);
 
-  // Never intercept requests going to the gauge device
-  if (url.hostname === '192.168.4.1') return;
+  // Never intercept cross-origin requests — the gauge device can live at
+  // any address (AP mode 192.168.4.1, hotspot, etc.), so only handle our
+  // own origin (the cached app shell).
+  if (url.origin !== self.location.origin) return;
 
   event.respondWith(
     caches.match(event.request, { ignoreSearch: true }).then(cached => {

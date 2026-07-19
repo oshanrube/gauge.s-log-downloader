@@ -89,8 +89,39 @@
             word-break: break-all;
         }
 
-        .endpoint-box span {
+        .endpoint-box {
+            display: flex;
+            align-items: center;
+        }
+
+        .endpoint-box label {
+            color: #7c85c5;
+            flex-shrink: 0;
+        }
+
+        .endpoint-box .proto {
             color: #a5b4fc;
+            flex-shrink: 0;
+        }
+
+        .endpoint-box input {
+            flex: 1;
+            min-width: 0;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: #a5b4fc;
+            font: inherit;
+            border-bottom: 1px dashed #2d3154;
+        }
+
+        .endpoint-box input:focus {
+            border-bottom-color: #6366f1;
+        }
+
+        .endpoint-box input:disabled {
+            border-bottom-color: transparent;
+            color: #34d399;
         }
 
         .options-box {
@@ -573,7 +604,8 @@
         <p class="subtitle">Fetches file list from device, groups &amp; concatenates CSV logs by base name</p>
 
         <div class="endpoint-box">
-            GET <span>http://192.168.4.1/list?dir=/logs</span>
+            <label for="deviceAddress">Device&nbsp;</label><span class="proto">http://</span><input id="deviceAddress"
+                spellcheck="false" autocomplete="off" placeholder="192.168.4.1" />
         </div>
 
         <div class="options-box">
@@ -626,17 +658,47 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.1.0';
-        const LIST_URL = 'http://192.168.4.1/list?dir=/logs';
-        const BASE_URL = 'http://192.168.4.1/logs/';
-        const DELETE_URL = 'http://192.168.4.1/edit';
+        const APP_VERSION = '1.2.0';
+        const DEFAULT_DEVICE = '192.168.4.1';
+
+        // ── Device address resolution ────────────────────────────────────
+        // Served FROM the device itself (http://<ip>/index.html): use
+        // relative same-origin URLs — no CORS, deletes work.
+        // Served from anywhere else (GitHub Pages, localhost): use the
+        // editable address, persisted in localStorage.
+        function isServedFromDevice() {
+            return location.protocol === 'http:' &&
+                /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname);
+        }
+
+        const addrInput = document.getElementById('deviceAddress');
+        if (isServedFromDevice()) {
+            addrInput.value = location.host;
+            addrInput.disabled = true;
+            addrInput.title = 'Served from the device — same-origin mode';
+        } else {
+            addrInput.value = localStorage.getItem('deviceAddress') || DEFAULT_DEVICE;
+            addrInput.addEventListener('change', () => {
+                localStorage.setItem('deviceAddress', addrInput.value.trim());
+            });
+        }
+
+        // '' means same-origin (relative URLs)
+        function deviceBase() {
+            if (isServedFromDevice()) return '';
+            return 'http://' + (addrInput.value.trim() || DEFAULT_DEVICE);
+        }
+
+        const listUrl = () => `${deviceBase()}/list?dir=/logs`;
+        const fileUrl = name => `${deviceBase()}/logs/${encodeURIComponent(name)}`;
+        const editUrl = () => `${deviceBase()}/edit`;
 
         async function deleteFile(filePath) {
             const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
             const body = `------${boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n${filePath}\r\n------${boundary}--\r\n`;
 
             try {
-                const res = await fetch(DELETE_URL, {
+                const res = await fetch(editUrl(), {
                     method: 'DELETE',
                     headers: {
                         'Content-Type': `multipart/form-data; boundary=----${boundary}`
@@ -655,10 +717,13 @@
                 return { ok: true };
             } catch (err) {
                 console.error('Delete failed:', err);
-                // A TypeError from fetch almost always means the request never reached
-                // the device (network down, wrong IP, or blocked by CORS/mixed-content).
+                // A TypeError from fetch means the request never reached the device.
+                // Cross-origin: almost certainly the CORS preflight — the firmware
+                // doesn't answer OPTIONS /edit, so the browser blocks the DELETE.
                 const reason = (err instanceof TypeError)
-                    ? `network error — could not reach device (${err.message}). Check the Wi-Fi connection to the device and that the page is served over http, not https.`
+                    ? (deviceBase() !== ''
+                        ? `blocked by browser (CORS) — the device firmware doesn't allow cross-origin deletes. Open the app from the device itself (http://${addrInput.value.trim()}/index.html) to enable deleting.`
+                        : `network error — could not reach device (${err.message}). Check the Wi-Fi connection.`)
                     : err.message;
                 return { ok: false, error: reason };
             }
@@ -737,8 +802,8 @@
             // ── Step 1: Fetch file list ────────────────────────────────────────────────
             let files;
             try {
-                log(`Fetching file list from <span style="color:#a5b4fc">${LIST_URL}</span>`, 'info');
-                const res = await fetch(LIST_URL);
+                log(`Fetching file list from <span style="color:#a5b4fc">${listUrl()}</span>`, 'info');
+                const res = await fetch(listUrl());
                 if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
                 const json = await res.json();
                 files = json.filter(item => item.type === 'file');
@@ -783,7 +848,7 @@
                 const deleteAfter = document.getElementById('deleteAfterDownload').checked;
 
                 for (const name of members) {
-                    const url = BASE_URL + encodeURIComponent(name);
+                    const url = fileUrl(name);
                     try {
                         const res = await fetch(url);
                         if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
