@@ -430,6 +430,78 @@
                 flex: 1;
             }
         }
+
+        /* ── Mobile / small-screen layout ─────────────────────────────── */
+        @media (max-width: 600px) {
+            body {
+                padding: 12px;
+                align-items: flex-start;
+            }
+
+            .card {
+                padding: 24px 20px;
+                border-radius: 16px;
+            }
+
+            .header {
+                gap: 12px;
+                margin-bottom: 6px;
+            }
+
+            .icon-wrap {
+                width: 40px;
+                height: 40px;
+                border-radius: 10px;
+            }
+
+            .icon-wrap svg {
+                width: 20px;
+                height: 20px;
+            }
+
+            h1 {
+                font-size: 1.25rem;
+            }
+
+            .subtitle {
+                /* Drop the icon-width indent so text uses the full width */
+                padding-left: 0;
+                margin-bottom: 24px;
+            }
+
+            .endpoint-box {
+                font-size: 0.7rem;
+                padding: 10px 12px;
+                margin-bottom: 22px;
+            }
+
+            #downloadBtn {
+                /* Larger touch target */
+                padding: 16px 20px;
+            }
+
+            #logBox {
+                /* Shorter so the summary stays reachable without scrolling */
+                height: 180px;
+                font-size: 0.72rem;
+            }
+
+            .summary.visible {
+                gap: 16px;
+            }
+        }
+
+        /* Respect users who prefer reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+
+            #downloadBtn,
+            .install-btn,
+            .progress-bar-fill,
+            #installPrompt {
+                transition: none;
+                animation: none;
+            }
+        }
     </style>
 </head>
 
@@ -525,10 +597,24 @@
                     },
                     body: body
                 });
-                return res.ok;
+                if (!res.ok) {
+                    // Try to surface any message the device returned in the body
+                    let detail = '';
+                    try {
+                        detail = (await res.text()).trim();
+                    } catch (_) { /* ignore */ }
+                    const reason = `HTTP ${res.status} ${res.statusText}` + (detail ? ` — ${detail}` : '');
+                    return { ok: false, error: reason };
+                }
+                return { ok: true };
             } catch (err) {
                 console.error('Delete failed:', err);
-                return false;
+                // A TypeError from fetch almost always means the request never reached
+                // the device (network down, wrong IP, or blocked by CORS/mixed-content).
+                const reason = (err instanceof TypeError)
+                    ? `network error — could not reach device (${err.message}). Check the Wi-Fi connection to the device and that the page is served over http, not https.`
+                    : err.message;
+                return { ok: false, error: reason };
             }
         }
 
@@ -674,11 +760,11 @@
                         // Delete file if option is enabled
                         if (deleteAfter) {
                             const filePath = `/logs/${name}`;
-                            const deleted = await deleteFile(filePath);
-                            if (deleted) {
+                            const result = await deleteFile(filePath);
+                            if (result.ok) {
                                 log(`&nbsp;&nbsp;&nbsp;&nbsp;🗑 Deleted ${name} from device`, 'info');
                             } else {
-                                log(`&nbsp;&nbsp;&nbsp;&nbsp;⚠ Failed to delete ${name}`, 'warn');
+                                log(`&nbsp;&nbsp;&nbsp;&nbsp;⚠ Failed to delete ${name}: ${result.error}`, 'warn');
                             }
                         }
                     } catch (err) {
