@@ -2,9 +2,9 @@
 
 A lightweight progressive web app (PWA) that connects to a **Gauge.S device** over Wi-Fi, merges all CSV log files by name, and downloads them in one tap — no app install needed.
 
-🌐 **Live app:** https://oshanrube.github.io/guage.s-log-downloader/
+🌐 **Live app:** https://oshanrube.github.io/gauge.s-log-downloader/
 
-![Scan to open app](https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://oshanrube.github.io/guage.s-log-downloader/&margin=8)
+![Scan to open app](https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://oshanrube.github.io/gauge.s-log-downloader/&margin=8)
 
 ---
 
@@ -22,7 +22,7 @@ You only need internet for this step. Do it once before heading to the field.
 
 1. Open **Safari** and go to:
    ```
-   https://oshanrube.github.io/guage.s-log-downloader/
+   https://oshanrube.github.io/gauge.s-log-downloader/
    ```
 2. Wait for the page to fully load (the service worker will cache it in the background).
 3. Tap the **Share** button at the bottom of the screen (box with an arrow pointing up).
@@ -33,7 +33,7 @@ You only need internet for this step. Do it once before heading to the field.
 
 1. Open **Chrome** and go to:
    ```
-   https://oshanrube.github.io/guage.s-log-downloader/
+   https://oshanrube.github.io/gauge.s-log-downloader/
    ```
 2. Wait for the page to fully load.
 3. Tap the **three-dot menu** (⋮) in the top-right corner.
