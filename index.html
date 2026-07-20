@@ -235,6 +235,105 @@
             width: 0%;
         }
 
+        /* File status table */
+        #fileTableWrap {
+            background: #0a0c16;
+            border: 1px solid #1e2340;
+            border-radius: 10px;
+            max-height: 240px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+
+        #fileTableWrap::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        #fileTableWrap::-webkit-scrollbar-thumb {
+            background: #2d3154;
+            border-radius: 3px;
+        }
+
+        #fileTable {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.78rem;
+            font-family: 'Courier New', monospace;
+        }
+
+        #fileTable th {
+            position: sticky;
+            top: 0;
+            background: #12152a;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 0.65rem;
+            text-align: left;
+            padding: 8px 12px;
+        }
+
+        #fileTable td {
+            padding: 5px 12px;
+            border-top: 1px solid #161a33;
+            color: #94a3b8;
+        }
+
+        #fileTable td.file-name {
+            overflow-wrap: anywhere;
+        }
+
+        #fileTable td.file-status {
+            width: 1%;
+            white-space: nowrap;
+            text-align: right;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 9px;
+            border-radius: 100px;
+            font-size: 0.67rem;
+            font-weight: 600;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+            white-space: nowrap;
+        }
+
+        .st-pending {
+            background: rgba(100, 116, 139, 0.15);
+            color: #94a3b8;
+        }
+
+        .st-active {
+            background: rgba(96, 165, 250, 0.15);
+            color: #60a5fa;
+        }
+
+        .st-downloaded {
+            background: rgba(96, 165, 250, 0.15);
+            color: #93c5fd;
+        }
+
+        .st-deleted {
+            background: rgba(165, 180, 252, 0.15);
+            color: #a5b4fc;
+        }
+
+        .st-processed {
+            background: rgba(52, 211, 153, 0.15);
+            color: #34d399;
+        }
+
+        .st-failed {
+            background: rgba(248, 113, 113, 0.15);
+            color: #f87171;
+        }
+
+        .st-warn {
+            background: rgba(251, 191, 36, 0.15);
+            color: #fbbf24;
+        }
+
         /* Log */
         .log-label {
             font-size: 0.78rem;
@@ -555,6 +654,20 @@
                 font-size: 0.72rem;
             }
 
+            #fileTableWrap {
+                max-height: 180px;
+            }
+
+            #fileTable {
+                font-size: 0.7rem;
+            }
+
+            #fileTable td,
+            #fileTable th {
+                padding-left: 8px;
+                padding-right: 8px;
+            }
+
             .summary.visible {
                 gap: 16px;
             }
@@ -632,6 +745,19 @@
                 <div class="progress-bar-fill" id="progressFill"></div>
             </div>
 
+            <div class="log-label">Files</div>
+            <div id="fileTableWrap">
+                <table id="fileTable">
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fileTableBody"></tbody>
+                </table>
+            </div>
+
             <div class="log-label">Activity Log</div>
             <div id="logBox"></div>
 
@@ -658,7 +784,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.2.0';
+        const APP_VERSION = '1.3.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -693,17 +819,59 @@
         const fileUrl = name => `${deviceBase()}/logs/${encodeURIComponent(name)}`;
         const editUrl = () => `${deviceBase()}/edit`;
 
-        async function deleteFile(filePath) {
-            const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
-            const body = `------${boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n${filePath}\r\n------${boundary}--\r\n`;
+        // ── Per-file status table ────────────────────────────────────────
+        const FILE_STATUS = {
+            pending:        { label: 'Pending',            cls: 'st-pending' },
+            downloading:    { label: 'Downloading…',       cls: 'st-active' },
+            downloaded:     { label: 'Downloaded',         cls: 'st-downloaded' },
+            downloadFailed: { label: 'Failed to download', cls: 'st-failed' },
+            deleting:       { label: 'Deleting…',          cls: 'st-active' },
+            deleted:        { label: 'Deleted',            cls: 'st-deleted' },
+            deleteFailed:   { label: 'Failed to delete',   cls: 'st-warn' },
+            processed:      { label: 'Processed ✓',        cls: 'st-processed' },
+        };
 
+        const fileRows = new Map(); // filename → status <td>
+
+        function initFileTable(names) {
+            const tbody = document.getElementById('fileTableBody');
+            tbody.innerHTML = '';
+            fileRows.clear();
+            for (const name of names) {
+                const tr = document.createElement('tr');
+                const tdName = document.createElement('td');
+                tdName.className = 'file-name';
+                tdName.textContent = name;
+                const tdStatus = document.createElement('td');
+                tdStatus.className = 'file-status';
+                tr.appendChild(tdName);
+                tr.appendChild(tdStatus);
+                tbody.appendChild(tr);
+                fileRows.set(name, tdStatus);
+                setFileStatus(name, 'pending');
+            }
+        }
+
+        function setFileStatus(name, key) {
+            const td = fileRows.get(name);
+            if (!td) return;
+            const st = FILE_STATUS[key];
+            td.innerHTML = `<span class="status-badge ${st.cls}" title="${st.label}">${st.label}</span>`;
+            // Keep the row in view while it's being worked on
+            if (key === 'downloading') {
+                td.parentElement.scrollIntoView({ block: 'nearest' });
+            }
+        }
+
+        async function deleteFile(filePath) {
             try {
+                // Same multipart format the device's own editor UI sends —
+                // the browser builds the body and boundary itself.
+                const fd = new FormData();
+                fd.append('path', filePath);
                 const res = await fetch(editUrl(), {
                     method: 'DELETE',
-                    headers: {
-                        'Content-Type': `multipart/form-data; boundary=----${boundary}`
-                    },
-                    body: body
+                    body: fd
                 });
                 if (!res.ok) {
                     // Try to surface any message the device returned in the body
@@ -808,6 +976,7 @@
                 const json = await res.json();
                 files = json.filter(item => item.type === 'file');
                 log(`Found <strong>${files.length}</strong> file(s)`, 'success');
+                initFileTable(files.map(f => f.name));
             } catch (err) {
                 log(`Failed to fetch file list: ${err.message}`, 'error');
                 btn.disabled = false;
@@ -850,9 +1019,11 @@
                 for (const name of members) {
                     const url = fileUrl(name);
                     try {
+                        setFileStatus(name, 'downloading');
                         const res = await fetch(url);
                         if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
                         const text = await res.text();
+                        setFileStatus(name, 'downloaded');
                         const lines = text.split(/\r?\n/);
 
                         if (headerLine === null) {
@@ -870,15 +1041,21 @@
 
                         // Delete file if option is enabled
                         if (deleteAfter) {
+                            setFileStatus(name, 'deleting');
                             const filePath = `/logs/${name}`;
                             const result = await deleteFile(filePath);
                             if (result.ok) {
+                                setFileStatus(name, 'processed');
                                 log(`&nbsp;&nbsp;&nbsp;&nbsp;🗑 Deleted ${name} from device`, 'info');
                             } else {
+                                setFileStatus(name, 'deleteFailed');
                                 log(`&nbsp;&nbsp;&nbsp;&nbsp;⚠ Failed to delete ${name}: ${result.error}`, 'warn');
                             }
+                        } else {
+                            setFileStatus(name, 'processed');
                         }
                     } catch (err) {
+                        setFileStatus(name, 'downloadFailed');
                         log(`&nbsp;&nbsp;✗ ${name} — ${err.message}`, 'error');
                         groupErr = true;
                     }
