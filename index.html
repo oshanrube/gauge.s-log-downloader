@@ -155,6 +155,23 @@
             margin-left: 28px;
         }
 
+        .link-btn {
+            background: none;
+            border: none;
+            padding: 0;
+            margin-left: 28px;
+            margin-top: 6px;
+            font-size: 0.75rem;
+            font-family: inherit;
+            color: #7c85c5;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
+        .link-btn:hover {
+            color: #a5b4fc;
+        }
+
         #downloadBtn {
             width: 100%;
             padding: 14px 24px;
@@ -317,6 +334,11 @@
         .st-deleted {
             background: rgba(165, 180, 252, 0.15);
             color: #a5b4fc;
+        }
+
+        .st-skipped {
+            background: rgba(148, 163, 184, 0.15);
+            color: #94a3b8;
         }
 
         .st-processed {
@@ -729,6 +751,15 @@
             <div class="checkbox-label-desc">Remove files from device after successful download</div>
         </div>
 
+        <div class="options-box">
+            <label class="checkbox-wrapper">
+                <input type="checkbox" id="skipDownloaded" />
+                <span class="checkbox-label">Skip already-downloaded files</span>
+            </label>
+            <div class="checkbox-label-desc">Remembers files fetched before (in this browser) and won't re-download them, since the device usually can't delete them itself</div>
+            <button type="button" id="clearHistoryBtn" class="link-btn">Clear download history (<span id="historyCount">0</span> tracked)</button>
+        </div>
+
         <button id="downloadBtn" onclick="startDownload()">
             <svg viewBox="0 0 24 24">
                 <path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z" />
@@ -784,7 +815,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.3.0';
+        const APP_VERSION = '1.4.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -829,7 +860,60 @@
             deleted:        { label: 'Deleted',            cls: 'st-deleted' },
             deleteFailed:   { label: 'Failed to delete',   cls: 'st-warn' },
             processed:      { label: 'Processed ✓',        cls: 'st-processed' },
+            skipped:        { label: 'Already downloaded', cls: 'st-skipped' },
         };
+
+        // ── Local download history ───────────────────────────────────────
+        // The device usually can't have files deleted from the PWA (CORS —
+        // see the delete-after-download flow below), so files persist on
+        // the SD card across runs. To avoid re-downloading/re-merging the
+        // same data every time, remember what's already been fetched, keyed
+        // by name (+ size when the device reports one, so a reused filename
+        // with different content isn't skipped).
+        const HISTORY_KEY = 'downloadHistory';
+
+        function loadHistory() {
+            try {
+                return JSON.parse(localStorage.getItem(HISTORY_KEY) || '{}');
+            } catch (_) {
+                return {};
+            }
+        }
+
+        function historyKey(file) {
+            return (file.size !== undefined && file.size !== null)
+                ? `${file.name}:${file.size}`
+                : file.name;
+        }
+
+        function markDownloaded(file) {
+            const history = loadHistory();
+            history[historyKey(file)] = Date.now();
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+            updateHistoryCount();
+        }
+
+        function updateHistoryCount() {
+            const count = Object.keys(loadHistory()).length;
+            document.getElementById('historyCount').textContent = count;
+        }
+
+        const skipInput = document.getElementById('skipDownloaded');
+        skipInput.checked = localStorage.getItem('skipDownloaded') !== 'false';
+        skipInput.addEventListener('change', () => {
+            localStorage.setItem('skipDownloaded', skipInput.checked);
+        });
+
+        document.getElementById('clearHistoryBtn').addEventListener('click', () => {
+            const count = Object.keys(loadHistory()).length;
+            if (!count) return;
+            if (confirm(`Clear the local download history? All ${count} tracked file(s) will be treated as new next time.`)) {
+                localStorage.removeItem(HISTORY_KEY);
+                updateHistoryCount();
+            }
+        });
+
+        updateHistoryCount();
 
         const fileRows = new Map(); // filename → status <td>
 
@@ -968,15 +1052,32 @@
             document.getElementById('logBox').innerHTML = '';
 
             // ── Step 1: Fetch file list ────────────────────────────────────────────────
-            let files;
+            let allFiles, files;
             try {
                 log(`Fetching file list from <span style="color:#a5b4fc">${listUrl()}</span>`, 'info');
                 const res = await fetch(listUrl());
                 if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
                 const json = await res.json();
-                files = json.filter(item => item.type === 'file');
-                log(`Found <strong>${files.length}</strong> file(s)`, 'success');
-                initFileTable(files.map(f => f.name));
+                allFiles = json.filter(item => item.type === 'file');
+                log(`Found <strong>${allFiles.length}</strong> file(s)`, 'success');
+                initFileTable(allFiles.map(f => f.name));
+
+                // Filter out files already downloaded in a previous run, if enabled.
+                const skipEnabled = skipInput.checked;
+                const history = loadHistory();
+                const skippedFiles = [];
+                files = [];
+                for (const f of allFiles) {
+                    if (skipEnabled && Object.prototype.hasOwnProperty.call(history, historyKey(f))) {
+                        skippedFiles.push(f);
+                    } else {
+                        files.push(f);
+                    }
+                }
+                if (skippedFiles.length) {
+                    log(`Skipping <strong>${skippedFiles.length}</strong> already-downloaded file(s)`, 'info');
+                    for (const f of skippedFiles) setFileStatus(f.name, 'skipped');
+                }
             } catch (err) {
                 log(`Failed to fetch file list: ${err.message}`, 'error');
                 btn.disabled = false;
@@ -985,12 +1086,24 @@
             }
 
             // ── Step 2: Group files by output name ────────────────────────────────────
+            const fileByName = new Map(allFiles.map(f => [f.name, f]));
+
             // Map: outputName → [ ...member filenames in order ]
             const groups = new Map();
             for (const f of files) {
                 const key = groupKey(f.name);
                 if (!groups.has(key)) groups.set(key, []);
                 groups.get(key).push(f.name);
+            }
+
+            if (files.length === 0) {
+                log(`Nothing new to fetch — all files were already downloaded previously`, 'success');
+                document.getElementById('okCount').textContent = 0;
+                document.getElementById('errCount').textContent = 0;
+                summary.classList.add('visible');
+                btn.disabled = false;
+                btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download Again`;
+                return;
             }
 
             log(`Grouped into <strong>${groups.size}</strong> output file(s)`, 'info');
@@ -1024,6 +1137,7 @@
                         if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
                         const text = await res.text();
                         setFileStatus(name, 'downloaded');
+                        markDownloaded(fileByName.get(name) || { name });
                         const lines = text.split(/\r?\n/);
 
                         if (headerLine === null) {
