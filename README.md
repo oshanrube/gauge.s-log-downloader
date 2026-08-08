@@ -4,6 +4,12 @@ A lightweight progressive web app (PWA) that connects to a **Gauge.S device** ov
 
 🌐 **Live app:** https://oshanrube.github.io/gauge.s-log-downloader/
 
+> **Need "Delete after download" to work?** The browser blocks it: a
+> cross-origin `DELETE` is preceded by a `OPTIONS` preflight that the device
+> firmware doesn't answer, so the delete never reaches the device. Build the
+> native app instead — see **[NATIVE.md](NATIVE.md)**. Everything else below
+> applies to the web app and is unchanged.
+
 ![Scan to open app](https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://oshanrube.github.io/gauge.s-log-downloader/&margin=8)
 
 ---
@@ -89,6 +95,7 @@ The merged files will be named like:
 | "Failed to fetch file list" error | Check that you are connected to the Gauge.S Wi-Fi and the device is powered on |
 | Phone drops the Gauge.S Wi-Fi automatically | On Android, toggle off **"Auto-switch to better network"** in Wi-Fi settings |
 | Downloaded file is empty | One or more source files on the device may be empty — check the Activity Log for details |
+| "Delete after download" always fails | Expected in the browser — the `DELETE` is stopped by a CORS preflight the firmware doesn't answer. Use the native build ([NATIVE.md](NATIVE.md)). |
 
 ---
 

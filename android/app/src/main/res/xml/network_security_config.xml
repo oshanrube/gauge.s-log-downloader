@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Gauge.S device serves plain HTTP on its own Wi-Fi (http://192.168.4.1).
+  Android blocks cleartext traffic by default from API 28 onwards, which would
+  make every request to the device fail before it left the phone. The device
+  address is user-configurable, so cleartext is permitted generally rather than
+  pinned to a single host.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

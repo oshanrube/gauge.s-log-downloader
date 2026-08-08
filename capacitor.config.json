@@ -1,0 +1,12 @@
+{
+  "appId": "io.github.oshanrube.gaugeslog",
+  "appName": "Gauge.S Downloader",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}

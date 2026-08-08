@@ -172,6 +172,44 @@
             color: #a5b4fc;
         }
 
+        /* Shown only in the native build — see IS_NATIVE */
+        .native-badge {
+            display: none;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 18px;
+            padding: 10px 12px;
+            border: 1px solid rgba(52, 211, 153, 0.25);
+            border-radius: 10px;
+            background: rgba(52, 211, 153, 0.07);
+            font-size: 0.75rem;
+            line-height: 1.5;
+            color: #86efac;
+        }
+
+        .native-badge.visible {
+            display: flex;
+        }
+
+        #shareBtn {
+            display: none;
+            width: 100%;
+            margin-top: 16px;
+            padding: 12px 20px;
+            background: rgba(99, 102, 241, 0.12);
+            border: 1px solid rgba(99, 102, 241, 0.45);
+            border-radius: 10px;
+            color: #a5b4fc;
+            font-family: inherit;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        #shareBtn:hover {
+            background: rgba(99, 102, 241, 0.2);
+        }
+
         #downloadBtn {
             width: 100%;
             padding: 14px 24px;
@@ -743,6 +781,11 @@
                 spellcheck="false" autocomplete="off" placeholder="192.168.4.1" />
         </div>
 
+        <div class="native-badge" id="nativeBadge">
+            <span>✓</span>
+            <span id="nativeBadgeText">Native build — device requests bypass the browser, so deleting works.</span>
+        </div>
+
         <div class="options-box">
             <label class="checkbox-wrapper">
                 <input type="checkbox" id="deleteAfterDownload" />
@@ -756,7 +799,7 @@
                 <input type="checkbox" id="skipDownloaded" />
                 <span class="checkbox-label">Skip already-downloaded files</span>
             </label>
-            <div class="checkbox-label-desc">Remembers files fetched before (in this browser) and won't re-download them, since the device usually can't delete them itself</div>
+            <div class="checkbox-label-desc" id="skipDownloadedDesc">Remembers files fetched before (in this browser) and won't re-download them, since the device usually can't delete them itself</div>
             <button type="button" id="clearHistoryBtn" class="link-btn">Clear download history (<span id="historyCount">0</span> tracked)</button>
         </div>
 
@@ -804,6 +847,8 @@
                     <span class="stat-key">failed</span>
                 </div>
             </div>
+
+            <button type="button" id="shareBtn" onclick="shareSavedFiles()">Export merged file(s)…</button>
         </div>
 
         <div class="footer">
@@ -815,7 +860,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.4.0';
+        const APP_VERSION = '1.5.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -849,6 +894,94 @@
         const listUrl = () => `${deviceBase()}/list?dir=/logs`;
         const fileUrl = name => `${deviceBase()}/logs/${encodeURIComponent(name)}`;
         const editUrl = () => `${deviceBase()}/edit`;
+
+        // ── Native bridge (Capacitor) ────────────────────────────────────
+        // In the native build every device request is made by the OS HTTP
+        // stack instead of the WebView's fetch. That removes both things that
+        // break deleting from the PWA:
+        //   • no CORS preflight — the browser never sends OPTIONS /edit, which
+        //     this firmware doesn't answer, so the DELETE actually arrives
+        //   • no mixed-content rule — plain http:// to the device is allowed
+        // On the web everything below falls back to fetch and behaves exactly
+        // as it did before.
+        const Cap = window.Capacitor;
+        const IS_NATIVE = !!(Cap && typeof Cap.isNativePlatform === 'function' && Cap.isNativePlatform());
+        const PLATFORM = IS_NATIVE ? Cap.getPlatform() : 'web';
+
+        function nativePlugin(name) {
+            return (IS_NATIVE && Cap.Plugins) ? Cap.Plugins[name] : null;
+        }
+
+        const REQUEST_TIMEOUTS = { connectTimeout: 15000, readTimeout: 60000 };
+
+        /**
+         * A single request to the device, normalised to
+         * { ok, status, statusText, body } across both transports.
+         *
+         * `data` must be a plain string on native — the native layer only
+         * accepts strings/JSON, which is why the multipart payload for deletes
+         * is assembled by hand rather than with FormData.
+         */
+        async function deviceRequest(url, options = {}) {
+            const { method = 'GET', headers = {}, data } = options;
+            const Http = nativePlugin('CapacitorHttp');
+
+            if (Http) {
+                const res = await Http.request({
+                    url,
+                    method,
+                    headers,
+                    ...(data === undefined ? {} : { data }),
+                    responseType: 'text',
+                    shouldEncodeUrlParams: false,
+                    ...REQUEST_TIMEOUTS,
+                });
+                // Capacitor parses the body itself when the device sends a JSON
+                // content-type, so re-serialise to keep `body` a string.
+                const body = typeof res.data === 'string'
+                    ? res.data
+                    : (res.data === undefined || res.data === null ? '' : JSON.stringify(res.data));
+                return {
+                    ok: res.status >= 200 && res.status < 300,
+                    status: res.status,
+                    statusText: '',
+                    body,
+                };
+            }
+
+            const init = { method };
+            if (Object.keys(headers).length) init.headers = headers;
+            if (data !== undefined) init.body = data;
+            const res = await fetch(url, init);
+            return { ok: res.ok, status: res.status, statusText: res.statusText, body: await res.text() };
+        }
+
+        function httpError(res) {
+            const detail = (res.body || '').trim();
+            return new Error(
+                `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}` +
+                (detail ? ` — ${detail.slice(0, 160)}` : '')
+            );
+        }
+
+        /**
+         * Turn a thrown transport error into something a field user can act on.
+         * A TypeError from fetch means the request never left the browser.
+         */
+        function describeTransportError(err) {
+            if (IS_NATIVE) {
+                return `could not reach the device (${err.message || err}). ` +
+                    `Check that the phone is still joined to the Gauge.S Wi-Fi.`;
+            }
+            if (err instanceof TypeError) {
+                return deviceBase() !== ''
+                    ? `blocked by the browser — cross-origin requests to the device are refused ` +
+                      `(CORS/mixed content). Use the native app build, or open the app from the ` +
+                      `device itself (http://${addrInput.value.trim()}/index.html).`
+                    : `network error — could not reach device (${err.message}). Check the Wi-Fi connection.`;
+            }
+            return err.message || String(err);
+        }
 
         // ── Per-file status table ────────────────────────────────────────
         const FILE_STATUS = {
@@ -947,7 +1080,100 @@
             }
         }
 
+        // ── Deleting ─────────────────────────────────────────────────────
+        function multipartBody(boundary, fields) {
+            let body = '';
+            for (const [name, value] of Object.entries(fields)) {
+                body += `--${boundary}\r\n`;
+                body += `Content-Disposition: form-data; name="${name}"\r\n\r\n`;
+                body += `${value}\r\n`;
+            }
+            return body + `--${boundary}--\r\n`;
+        }
+
+        /**
+         * Ways to ask the firmware to delete a file, most likely first.
+         *
+         * The stock ESP FSBrowser /edit handler reads a "path" argument off a
+         * DELETE request, but forks disagree about how that argument is parsed.
+         * Natively there is no preflight standing in the way, so it costs one
+         * cheap round trip to fall through the variants until one is accepted —
+         * and the winner is remembered so later deletes go straight to it.
+         */
+        const DELETE_STRATEGIES = [
+            {
+                id: 'multipart',
+                label: 'multipart body',
+                build(path) {
+                    const boundary = '----GaugeSBoundary' + Date.now().toString(16);
+                    return {
+                        url: editUrl(),
+                        headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+                        data: multipartBody(boundary, { path }),
+                    };
+                },
+            },
+            {
+                id: 'urlencoded',
+                label: 'form-urlencoded body',
+                build(path) {
+                    return {
+                        url: editUrl(),
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        data: `path=${encodeURIComponent(path)}`,
+                    };
+                },
+            },
+            {
+                id: 'query',
+                label: 'query string',
+                build(path) {
+                    return { url: `${editUrl()}?path=${encodeURIComponent(path)}`, headers: {}, data: undefined };
+                },
+            },
+        ];
+
+        const DELETE_STRATEGY_KEY = 'deleteStrategy';
+
+        function orderedDeleteStrategies() {
+            const preferred = localStorage.getItem(DELETE_STRATEGY_KEY);
+            if (!preferred) return DELETE_STRATEGIES;
+            const winner = DELETE_STRATEGIES.filter(s => s.id === preferred);
+            return winner.length
+                ? [...winner, ...DELETE_STRATEGIES.filter(s => s.id !== preferred)]
+                : DELETE_STRATEGIES;
+        }
+
         async function deleteFile(filePath) {
+            return IS_NATIVE ? deleteFileNative(filePath) : deleteFileWeb(filePath);
+        }
+
+        async function deleteFileNative(filePath) {
+            const failures = [];
+
+            for (const strategy of orderedDeleteStrategies()) {
+                const { url, headers, data } = strategy.build(filePath);
+                try {
+                    const res = await deviceRequest(url, { method: 'DELETE', headers, data });
+                    if (res.ok) {
+                        localStorage.setItem(DELETE_STRATEGY_KEY, strategy.id);
+                        return { ok: true, via: strategy.label };
+                    }
+                    failures.push(`${strategy.label} → ${httpError(res).message}`);
+                } catch (err) {
+                    console.error(`Delete failed (${strategy.id}):`, err);
+                    failures.push(`${strategy.label} → ${describeTransportError(err)}`);
+                }
+            }
+
+            // Every variant was refused. Nothing blocked these requests on the
+            // phone's side, so the device itself is rejecting them — forget the
+            // remembered strategy so the next run retries from the top.
+            localStorage.removeItem(DELETE_STRATEGY_KEY);
+            return { ok: false, error: failures.join('; ') };
+        }
+
+        async function deleteFileWeb(filePath) {
             try {
                 // Same multipart format the device's own editor UI sends —
                 // the browser builds the body and boundary itself.
@@ -969,15 +1195,7 @@
                 return { ok: true };
             } catch (err) {
                 console.error('Delete failed:', err);
-                // A TypeError from fetch means the request never reached the device.
-                // Cross-origin: almost certainly the CORS preflight — the firmware
-                // doesn't answer OPTIONS /edit, so the browser blocks the DELETE.
-                const reason = (err instanceof TypeError)
-                    ? (deviceBase() !== ''
-                        ? `blocked by browser (CORS) — the device firmware doesn't allow cross-origin deletes. Open the app from the device itself (http://${addrInput.value.trim()}/index.html) to enable deleting.`
-                        : `network error — could not reach device (${err.message}). Check the Wi-Fi connection.`)
-                    : err.message;
-                return { ok: false, error: reason };
+                return { ok: false, error: describeTransportError(err) };
             }
         }
 
@@ -1009,6 +1227,72 @@
             document.body.appendChild(a);
             a.click();
             setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+        }
+
+        // ── Saving merged files ──────────────────────────────────────────
+        // A download anchor does nothing inside a WebView, so the native build
+        // writes through the Filesystem plugin and offers the results to the
+        // share sheet afterwards.
+        const savedNativeFiles = [];
+
+        const SAVE_TARGETS = [
+            { directory: 'DOCUMENTS', label: 'Documents/GaugeS' },
+            { directory: 'EXTERNAL', label: 'app storage (GaugeS)' },
+            { directory: 'CACHE', label: 'app cache (GaugeS)' },
+        ];
+
+        async function saveFileNative(content, filename) {
+            const FS = nativePlugin('Filesystem');
+            if (!FS) throw new Error('Filesystem plugin unavailable');
+
+            // Documents is browsable from the Files app on both platforms, but
+            // scoped storage can refuse it — fall back to locations that are
+            // always writable and still reachable via the share sheet.
+            let lastErr;
+            for (const target of SAVE_TARGETS) {
+                try {
+                    const res = await FS.writeFile({
+                        path: `GaugeS/${filename}`,
+                        data: content,
+                        directory: target.directory,
+                        encoding: 'utf8',
+                        recursive: true,
+                    });
+                    savedNativeFiles.push(res.uri);
+                    return { uri: res.uri, location: target.label };
+                } catch (err) {
+                    lastErr = err;
+                }
+            }
+            throw lastErr || new Error('no writable location');
+        }
+
+        async function saveMerged(content, filename) {
+            if (!IS_NATIVE) {
+                triggerDownload(content, filename);
+                return { ok: true };
+            }
+            try {
+                const saved = await saveFileNative(content, filename);
+                return { ok: true, location: saved.location };
+            } catch (err) {
+                return { ok: false, error: err.message || String(err) };
+            }
+        }
+
+        async function shareSavedFiles() {
+            const Share = nativePlugin('Share');
+            if (!Share || !savedNativeFiles.length) return;
+            try {
+                await Share.share({
+                    title: 'Gauge.S logs',
+                    files: savedNativeFiles.slice(),
+                    dialogTitle: 'Export merged logs',
+                });
+            } catch (err) {
+                // A cancelled share sheet rejects too — only worth logging.
+                console.warn('Share cancelled or failed:', err);
+            }
         }
 
         /**
@@ -1050,14 +1334,21 @@
             progressSection.style.display = 'block';
             summary.classList.remove('visible');
             document.getElementById('logBox').innerHTML = '';
+            savedNativeFiles.length = 0;
+            document.getElementById('shareBtn').style.display = 'none';
 
             // ── Step 1: Fetch file list ────────────────────────────────────────────────
             let allFiles, files;
             try {
                 log(`Fetching file list from <span style="color:#a5b4fc">${listUrl()}</span>`, 'info');
-                const res = await fetch(listUrl());
-                if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                const json = await res.json();
+                const res = await deviceRequest(listUrl());
+                if (!res.ok) throw httpError(res);
+                let json;
+                try {
+                    json = JSON.parse(res.body);
+                } catch (_) {
+                    throw new Error(`device returned a non-JSON file list — "${res.body.trim().slice(0, 120)}"`);
+                }
                 allFiles = json.filter(item => item.type === 'file');
                 log(`Found <strong>${allFiles.length}</strong> file(s)`, 'success');
                 initFileTable(allFiles.map(f => f.name));
@@ -1079,7 +1370,7 @@
                     for (const f of skippedFiles) setFileStatus(f.name, 'skipped');
                 }
             } catch (err) {
-                log(`Failed to fetch file list: ${err.message}`, 'error');
+                log(`Failed to fetch file list: ${describeTransportError(err)}`, 'error');
                 btn.disabled = false;
                 btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download`;
                 return;
@@ -1133,9 +1424,9 @@
                     const url = fileUrl(name);
                     try {
                         setFileStatus(name, 'downloading');
-                        const res = await fetch(url);
-                        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                        const text = await res.text();
+                        const res = await deviceRequest(url);
+                        if (!res.ok) throw httpError(res);
+                        const text = res.body;
                         setFileStatus(name, 'downloaded');
                         markDownloaded(fileByName.get(name) || { name });
                         const lines = text.split(/\r?\n/);
@@ -1160,7 +1451,8 @@
                             const result = await deleteFile(filePath);
                             if (result.ok) {
                                 setFileStatus(name, 'processed');
-                                log(`&nbsp;&nbsp;&nbsp;&nbsp;🗑 Deleted ${name} from device`, 'info');
+                                log(`&nbsp;&nbsp;&nbsp;&nbsp;🗑 Deleted ${name} from device` +
+                                    (result.via ? ` <span style="opacity:.6">(${result.via})</span>` : ''), 'info');
                             } else {
                                 setFileStatus(name, 'deleteFailed');
                                 log(`&nbsp;&nbsp;&nbsp;&nbsp;⚠ Failed to delete ${name}: ${result.error}`, 'warn');
@@ -1170,7 +1462,7 @@
                         }
                     } catch (err) {
                         setFileStatus(name, 'downloadFailed');
-                        log(`&nbsp;&nbsp;✗ ${name} — ${err.message}`, 'error');
+                        log(`&nbsp;&nbsp;✗ ${name} — ${describeTransportError(err)}`, 'error');
                         groupErr = true;
                     }
 
@@ -1181,14 +1473,18 @@
 
                 // Save the merged file
                 const merged = parts.join('\n') + '\n';
-                triggerDownload(merged, outName);
+                const saved = await saveMerged(merged, outName);
 
-                if (groupErr) {
+                if (!saved.ok) {
+                    errGroups++;
+                    log(`✗ Could not save ${outName} — ${saved.error}`, 'error');
+                } else if (groupErr) {
                     errGroups++;
                     log(`⚠ ${outName} saved with some missing parts`, 'warn');
                 } else {
                     okGroups++;
-                    log(`✓ ${outName} saved (${(merged.length / 1024).toFixed(1)} KB total)`, 'success');
+                    log(`✓ ${outName} saved (${(merged.length / 1024).toFixed(1)} KB total)` +
+                        (saved.location ? ` → ${saved.location}` : ''), 'success');
                 }
 
                 // Brief pause between group downloads
@@ -1201,6 +1497,12 @@
             document.getElementById('okCount').textContent = okGroups;
             document.getElementById('errCount').textContent = errGroups;
             summary.classList.add('visible');
+
+            if (IS_NATIVE && savedNativeFiles.length && nativePlugin('Share')) {
+                const shareBtn = document.getElementById('shareBtn');
+                shareBtn.textContent = `Export ${savedNativeFiles.length} merged file(s)…`;
+                shareBtn.style.display = 'block';
+            }
 
             btn.disabled = false;
             btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download Again`;
@@ -1257,19 +1559,52 @@
         });
 
         // ── Version display ──────────────────────────────────────────────
-        document.getElementById('appVersion').textContent = APP_VERSION;
+        document.getElementById('appVersion').textContent = APP_VERSION + (IS_NATIVE ? ` · ${PLATFORM}` : '');
 
         // ── Online/offline indicator ─────────────────────────────────────
+        // Only meaningful on the web. Natively the phone is *expected* to be on
+        // a Wi-Fi network with no internet, and device requests still work, so
+        // flagging "offline" there would be actively misleading.
         function updateOnlineStatus() {
             document.getElementById('offlineBadge')
-                .classList.toggle('visible', !navigator.onLine);
+                .classList.toggle('visible', !IS_NATIVE && !navigator.onLine);
         }
         window.addEventListener('online', updateOnlineStatus);
         window.addEventListener('offline', updateOnlineStatus);
         updateOnlineStatus();
 
-        // Register service worker for offline support
-        if ('serviceWorker' in navigator) {
+        // ── Native startup ───────────────────────────────────────────────
+        async function initNative() {
+            const badge = document.getElementById('nativeBadge');
+            const badgeText = document.getElementById('nativeBadgeText');
+            badge.classList.add('visible');
+
+            document.getElementById('skipDownloadedDesc').textContent =
+                "Remembers files fetched before and won't re-download them.";
+
+            // Android hands requests to mobile data when the Gauge.S Wi-Fi has
+            // no internet uplink. Pin this app's sockets to Wi-Fi so the device
+            // stays reachable. Best-effort: never block startup on it.
+            const WifiBind = nativePlugin('WifiBind');
+            if (!WifiBind) return;
+            try {
+                const res = await WifiBind.bind();
+                badgeText.textContent = res && res.ok
+                    ? `Native build — deletes work, and requests are pinned to Wi-Fi (${res.message}).`
+                    : `Native build — deletes work. Wi-Fi pinning unavailable: ${res && res.message}.`;
+            } catch (err) {
+                console.warn('[WifiBind] failed:', err);
+                badgeText.textContent =
+                    'Native build — deletes work. Could not pin requests to Wi-Fi; ' +
+                    'turn mobile data off if the device is unreachable.';
+            }
+        }
+
+        if (IS_NATIVE) {
+            initNative();
+        } else if ('serviceWorker' in navigator) {
+            // Register service worker for offline support. The native build
+            // already ships the app shell inside the binary, so this is web-only.
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js')
                     .then(reg => {
