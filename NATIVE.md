@@ -126,6 +126,29 @@ native layer only accepts string/JSON bodies.
 
 ---
 
+## Icons and splash screens
+
+```bash
+npm run icons
+```
+
+That runs three steps:
+
+1. `scripts/make-icons.mjs` draws the mark (a gauge dial whose needle is a
+   download arrow) as SVG and rasterises the sources into `assets/`. It also
+   refreshes the PWA icons at the repo root, so web and native stay identical.
+2. `capacitor-assets generate` fans those out into every Android/iOS density.
+3. `scripts/fix-adaptive-icon.mjs` re-patches the adaptive-icon XML.
+
+Step 3 is not optional. The generator insets **both** adaptive layers by 16.7%,
+leaving the background covering only the central 72dp of the 108dp canvas — so
+launchers that apply parallax expose transparent edges as you scroll. The patch
+makes the background full-bleed and leaves the inset on the foreground, which is
+what the safe zone is actually for. The generator rewrites those XML files on
+every run, hence re-patching each time.
+
+Edit the artwork in `scripts/make-icons.mjs`, not the generated PNGs.
+
 ## Where merged files go
 
 `Documents/GaugeS/` when writable, otherwise app storage, otherwise the app
