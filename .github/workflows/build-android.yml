@@ -80,29 +80,41 @@ jobs:
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
           tag="v${version}"
-          asset="gauge-s-downloader-${tag}-debug.apk"
-          cp "$APK_PATH" "$asset"
+
+          # Two assets from one APK: a versioned name so downloads are
+          # identifiable, and a fixed name so the in-app install link
+          # (/releases/latest/download/gauge-s-downloader-latest.apk) keeps
+          # working across versions without editing index.html.
+          versioned="gauge-s-downloader-${tag}-debug.apk"
+          stable="gauge-s-downloader-latest.apk"
+          cp "$APK_PATH" "$versioned"
+          cp "$APK_PATH" "$stable"
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag exists — replacing the APK asset."
-            gh release upload "$tag" "$asset" --clobber
+            echo "Release $tag exists — replacing the APK assets."
+            gh release upload "$tag" "$versioned" "$stable" --clobber
+            # Older runs published this as a prerelease, which /releases/latest
+            # skips over. Promote it so the install link resolves.
+            gh release edit "$tag" --prerelease=false --latest
           else
             echo "Creating release $tag."
-            gh release create "$tag" "$asset" \
+            gh release create "$tag" "$versioned" "$stable" \
               --target "$GITHUB_SHA" \
-              --title "Gauge.S Downloader $tag — Android (debug)" \
-              --prerelease \
+              --title "Gauge.S Downloader $tag — Android" \
+              --latest \
               --notes "Android build of the Gauge.S log downloader.
 
           Unlike the web app, this one can **delete files from the device**: requests go
           through the OS HTTP stack, so there is no CORS preflight for the firmware to
           drop and no mixed-content restriction. See [NATIVE.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/NATIVE.md).
 
-          **Install:** download the \`.apk\` below and open it. Android will ask you to
-          allow installing from unknown sources.
+          It also pins its sockets to the Gauge.S Wi-Fi, so the device stays reachable
+          while Android reports 'no internet'.
 
-          This is a **debug-signed** build for sideloading — not a Play Store release.
-          It has not yet been tested against real Gauge.S hardware."
+          **Install:** download \`gauge-s-downloader-latest.apk\` below and open it.
+          Android will ask you to allow installing from unknown sources.
+
+          This is a **debug-signed** build for sideloading — not a Play Store release."
           fi
 
           echo "Release URL: $(gh release view "$tag" --json url -q .url)"

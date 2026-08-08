@@ -155,21 +155,59 @@
             margin-left: 28px;
         }
 
-        .link-btn {
-            background: none;
-            border: none;
-            padding: 0;
-            margin-left: 28px;
-            margin-top: 6px;
-            font-size: 0.75rem;
-            font-family: inherit;
-            color: #7c85c5;
-            text-decoration: underline;
-            cursor: pointer;
+        /* Web-only prompt to install the native app — hidden natively and on
+           iOS, where the APK is no use. See IS_NATIVE / initWeb. */
+        .apk-banner {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding: 12px 14px;
+            border: 1px solid rgba(99, 102, 241, 0.4);
+            border-radius: 10px;
+            background: rgba(99, 102, 241, 0.1);
+            text-decoration: none;
+            transition: background 0.2s ease;
         }
 
-        .link-btn:hover {
-            color: #a5b4fc;
+        .apk-banner.visible {
+            display: flex;
+        }
+
+        .apk-banner:hover {
+            background: rgba(99, 102, 241, 0.18);
+        }
+
+        .apk-icon {
+            width: 34px;
+            height: 34px;
+            flex-shrink: 0;
+            border-radius: 9px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .apk-icon svg {
+            width: 18px;
+            height: 18px;
+            fill: #fff;
+        }
+
+        .apk-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            font-size: 0.75rem;
+            line-height: 1.45;
+            color: #94a3b8;
+        }
+
+        .apk-text strong {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #c7d2fe;
         }
 
         /* Shown only in the native build — see IS_NATIVE */
@@ -372,11 +410,6 @@
         .st-deleted {
             background: rgba(165, 180, 252, 0.15);
             color: #a5b4fc;
-        }
-
-        .st-skipped {
-            background: rgba(148, 163, 184, 0.15);
-            color: #94a3b8;
         }
 
         .st-processed {
@@ -786,21 +819,25 @@
             <span id="nativeBadgeText">Native build — device requests bypass the browser, so deleting works.</span>
         </div>
 
-        <div class="options-box">
-            <label class="checkbox-wrapper">
-                <input type="checkbox" id="deleteAfterDownload" />
-                <span class="checkbox-label">Delete after download</span>
-            </label>
-            <div class="checkbox-label-desc">Remove files from device after successful download</div>
-        </div>
+        <a class="apk-banner" id="apkBanner"
+            href="https://github.com/oshanrube/gauge.s-log-downloader/releases/latest/download/gauge-s-downloader-latest.apk">
+            <span class="apk-icon">
+                <svg viewBox="0 0 24 24">
+                    <path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z" />
+                </svg>
+            </span>
+            <span class="apk-text">
+                <strong>Install the Android app</strong>
+                Deleting files from the device only works in the app — the browser blocks it.
+            </span>
+        </a>
 
         <div class="options-box">
             <label class="checkbox-wrapper">
-                <input type="checkbox" id="skipDownloaded" />
-                <span class="checkbox-label">Skip already-downloaded files</span>
+                <input type="checkbox" id="deleteAfterDownload" checked />
+                <span class="checkbox-label">Delete after download</span>
             </label>
-            <div class="checkbox-label-desc" id="skipDownloadedDesc">Remembers files fetched before (in this browser) and won't re-download them, since the device usually can't delete them itself</div>
-            <button type="button" id="clearHistoryBtn" class="link-btn">Clear download history (<span id="historyCount">0</span> tracked)</button>
+            <div class="checkbox-label-desc">Remove files from device after successful download</div>
         </div>
 
         <button id="downloadBtn" onclick="startDownload()">
@@ -860,7 +897,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.5.0';
+        const APP_VERSION = '1.6.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -993,60 +1030,7 @@
             deleted:        { label: 'Deleted',            cls: 'st-deleted' },
             deleteFailed:   { label: 'Failed to delete',   cls: 'st-warn' },
             processed:      { label: 'Processed ✓',        cls: 'st-processed' },
-            skipped:        { label: 'Already downloaded', cls: 'st-skipped' },
         };
-
-        // ── Local download history ───────────────────────────────────────
-        // The device usually can't have files deleted from the PWA (CORS —
-        // see the delete-after-download flow below), so files persist on
-        // the SD card across runs. To avoid re-downloading/re-merging the
-        // same data every time, remember what's already been fetched, keyed
-        // by name (+ size when the device reports one, so a reused filename
-        // with different content isn't skipped).
-        const HISTORY_KEY = 'downloadHistory';
-
-        function loadHistory() {
-            try {
-                return JSON.parse(localStorage.getItem(HISTORY_KEY) || '{}');
-            } catch (_) {
-                return {};
-            }
-        }
-
-        function historyKey(file) {
-            return (file.size !== undefined && file.size !== null)
-                ? `${file.name}:${file.size}`
-                : file.name;
-        }
-
-        function markDownloaded(file) {
-            const history = loadHistory();
-            history[historyKey(file)] = Date.now();
-            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-            updateHistoryCount();
-        }
-
-        function updateHistoryCount() {
-            const count = Object.keys(loadHistory()).length;
-            document.getElementById('historyCount').textContent = count;
-        }
-
-        const skipInput = document.getElementById('skipDownloaded');
-        skipInput.checked = localStorage.getItem('skipDownloaded') !== 'false';
-        skipInput.addEventListener('change', () => {
-            localStorage.setItem('skipDownloaded', skipInput.checked);
-        });
-
-        document.getElementById('clearHistoryBtn').addEventListener('click', () => {
-            const count = Object.keys(loadHistory()).length;
-            if (!count) return;
-            if (confirm(`Clear the local download history? All ${count} tracked file(s) will be treated as new next time.`)) {
-                localStorage.removeItem(HISTORY_KEY);
-                updateHistoryCount();
-            }
-        });
-
-        updateHistoryCount();
 
         const fileRows = new Map(); // filename → status <td>
 
@@ -1338,7 +1322,7 @@
             document.getElementById('shareBtn').style.display = 'none';
 
             // ── Step 1: Fetch file list ────────────────────────────────────────────────
-            let allFiles, files;
+            let files;
             try {
                 log(`Fetching file list from <span style="color:#a5b4fc">${listUrl()}</span>`, 'info');
                 const res = await deviceRequest(listUrl());
@@ -1349,26 +1333,9 @@
                 } catch (_) {
                     throw new Error(`device returned a non-JSON file list — "${res.body.trim().slice(0, 120)}"`);
                 }
-                allFiles = json.filter(item => item.type === 'file');
-                log(`Found <strong>${allFiles.length}</strong> file(s)`, 'success');
-                initFileTable(allFiles.map(f => f.name));
-
-                // Filter out files already downloaded in a previous run, if enabled.
-                const skipEnabled = skipInput.checked;
-                const history = loadHistory();
-                const skippedFiles = [];
-                files = [];
-                for (const f of allFiles) {
-                    if (skipEnabled && Object.prototype.hasOwnProperty.call(history, historyKey(f))) {
-                        skippedFiles.push(f);
-                    } else {
-                        files.push(f);
-                    }
-                }
-                if (skippedFiles.length) {
-                    log(`Skipping <strong>${skippedFiles.length}</strong> already-downloaded file(s)`, 'info');
-                    for (const f of skippedFiles) setFileStatus(f.name, 'skipped');
-                }
+                files = json.filter(item => item.type === 'file');
+                log(`Found <strong>${files.length}</strong> file(s)`, 'success');
+                initFileTable(files.map(f => f.name));
             } catch (err) {
                 log(`Failed to fetch file list: ${describeTransportError(err)}`, 'error');
                 btn.disabled = false;
@@ -1377,8 +1344,6 @@
             }
 
             // ── Step 2: Group files by output name ────────────────────────────────────
-            const fileByName = new Map(allFiles.map(f => [f.name, f]));
-
             // Map: outputName → [ ...member filenames in order ]
             const groups = new Map();
             for (const f of files) {
@@ -1388,7 +1353,7 @@
             }
 
             if (files.length === 0) {
-                log(`Nothing new to fetch — all files were already downloaded previously`, 'success');
+                log(`No log files on the device`, 'success');
                 document.getElementById('okCount').textContent = 0;
                 document.getElementById('errCount').textContent = 0;
                 summary.classList.add('visible');
@@ -1428,7 +1393,6 @@
                         if (!res.ok) throw httpError(res);
                         const text = res.body;
                         setFileStatus(name, 'downloaded');
-                        markDownloaded(fileByName.get(name) || { name });
                         const lines = text.split(/\r?\n/);
 
                         if (headerLine === null) {
@@ -1579,9 +1543,6 @@
             const badgeText = document.getElementById('nativeBadgeText');
             badge.classList.add('visible');
 
-            document.getElementById('skipDownloadedDesc').textContent =
-                "Remembers files fetched before and won't re-download them.";
-
             // Android hands requests to mobile data when the Gauge.S Wi-Fi has
             // no internet uplink. Pin this app's sockets to Wi-Fi so the device
             // stays reachable. Best-effort: never block startup on it.
@@ -1600,20 +1561,35 @@
             }
         }
 
-        if (IS_NATIVE) {
-            initNative();
-        } else if ('serviceWorker' in navigator) {
+        // ── Web startup ──────────────────────────────────────────────────
+        function initWeb() {
+            // Offer the APK, but not on iOS — there's no iOS build published,
+            // and an .apk is no use there.
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            if (!isIOS) {
+                document.getElementById('apkBanner').classList.add('visible');
+            }
+
             // Register service worker for offline support. The native build
             // already ships the app shell inside the binary, so this is web-only.
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js')
-                    .then(reg => {
-                        console.log('[SW] Registered, scope:', reg.scope);
-                        // Check for an updated shell each time the app opens
-                        reg.update();
-                    })
-                    .catch(err => console.warn('[SW] Registration failed:', err));
-            });
+            if ('serviceWorker' in navigator) {
+                window.addEventListener('load', () => {
+                    navigator.serviceWorker.register('./sw.js')
+                        .then(reg => {
+                            console.log('[SW] Registered, scope:', reg.scope);
+                            // Check for an updated shell each time the app opens
+                            reg.update();
+                        })
+                        .catch(err => console.warn('[SW] Registration failed:', err));
+                });
+            }
+        }
+
+        if (IS_NATIVE) {
+            initNative();
+        } else {
+            initWeb();
         }
     </script>
 
