@@ -24,6 +24,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Needed to create/update the release on a manual run.
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -64,3 +68,41 @@ jobs:
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      # Actions artifacts need a GitHub login and arrive as a zip, which is
+      # painful on a phone. A release asset is a direct tap-to-install link.
+      # Manual runs only, so ordinary pushes don't publish releases.
+      - name: Attach APK to a release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          tag="v${version}"
+          asset="gauge-s-downloader-${tag}-debug.apk"
+          cp "$APK_PATH" "$asset"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag exists — replacing the APK asset."
+            gh release upload "$tag" "$asset" --clobber
+          else
+            echo "Creating release $tag."
+            gh release create "$tag" "$asset" \
+              --target "$GITHUB_SHA" \
+              --title "Gauge.S Downloader $tag — Android (debug)" \
+              --prerelease \
+              --notes "Android build of the Gauge.S log downloader.
+
+          Unlike the web app, this one can **delete files from the device**: requests go
+          through the OS HTTP stack, so there is no CORS preflight for the firmware to
+          drop and no mixed-content restriction. See [NATIVE.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/NATIVE.md).
+
+          **Install:** download the \`.apk\` below and open it. Android will ask you to
+          allow installing from unknown sources.
+
+          This is a **debug-signed** build for sideloading — not a Play Store release.
+          It has not yet been tested against real Gauge.S hardware."
+          fi
+
+          echo "Release URL: $(gh release view "$tag" --json url -q .url)"
