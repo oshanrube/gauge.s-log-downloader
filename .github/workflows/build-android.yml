@@ -76,11 +76,24 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -o pipefail
           if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
-            ./gradlew reportSigning assembleRelease --no-daemon --stacktrace
+            task=assembleRelease
           else
-            ./gradlew reportSigning assembleDebug --no-daemon --stacktrace
+            task=assembleDebug
           fi
+          # No --stacktrace: it buries Gradle's own "What went wrong" summary
+          # under hundreds of frames. The log is kept so the failure step below
+          # can surface just the useful part.
+          ./gradlew reportSigning "$task" --no-daemon | tee "$RUNNER_TEMP/gradle.log"
+
+      - name: Show the Gradle failure
+        if: failure()
+        run: |
+          echo "===== Gradle failure ====="
+          sed -n '/^FAILURE:/,/^\* Get more help/p' "$RUNNER_TEMP/gradle.log" | head -60
+          echo "===== last errors ====="
+          grep -iE '^(e:|error:)|Execution failed|Caused by|> ' "$RUNNER_TEMP/gradle.log" | tail -30
 
       - name: Report APK details
         run: |

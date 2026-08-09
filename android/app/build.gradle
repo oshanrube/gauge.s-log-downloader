@@ -42,6 +42,13 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode verMajor * 10000 + verMinor * 100 + verPatch
         versionName packageJson.version
+
+        // net.openid:appauth arrives transitively via the generic-oauth2
+        // plugin, and its manifest declares a redirect activity using
+        // ${appAuthRedirectScheme}. Placeholders do not propagate from a
+        // library to the app, so the merger fails here unless the app defines
+        // it. Must match the OAuth redirectUrl scheme in index.html.
+        manifestPlaceholders = [appAuthRedirectScheme: 'io.github.oshanrube.gaugeslog']
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
