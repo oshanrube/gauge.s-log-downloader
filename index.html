@@ -1108,7 +1108,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.13.0';
+        const APP_VERSION = '1.14.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -2117,6 +2117,115 @@
          *   writing them out if the upload fails, since by then the originals
          *   may already have been deleted from the Gauge.S.
          */
+        // ── CSV merging ──────────────────────────────────────────────────
+        /** Natural order, so Gauge.S-10 sorts after Gauge.S-2, not after -1. */
+        function comparePartNames(a, b) {
+            return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+        }
+
+        function findTimestampColumn(headerLine) {
+            const cells = headerLine.split(',');
+            for (let i = 0; i < cells.length; i++) {
+                if (/timestamp/i.test(cells[i])) return i;
+            }
+            return -1;
+        }
+
+        /** Median positive step, used as the gap to bridge two files. */
+        function medianStep(values) {
+            const steps = [];
+            for (let i = 1; i < values.length; i++) {
+                const step = values[i] - values[i - 1];
+                if (step > 0) steps.push(step);
+            }
+            if (!steps.length) return null;
+            steps.sort((a, b) => a - b);
+            return steps[Math.floor(steps.length / 2)];
+        }
+
+        /**
+         * Concatenates the parts of one log, dropping the repeated header and
+         * making the timestamp column run continuously.
+         *
+         * Every file restarts "Timestamp (ms)" at 0, so plain concatenation
+         * gives a column that drops back to zero at each boundary. Each part is
+         * shifted by where the previous one ended plus one sampling step.
+         *
+         * The step is the previous part's *median* gap rather than its last
+         * one: sampling is broadly regular but carries occasional outliers, so
+         * a single reading would sometimes bridge files by a millisecond and
+         * sometimes by far too much. The true gap between two files is not
+         * recorded anywhere, so this is an estimate either way — just a stable
+         * one.
+         *
+         * Anything unrecognised passes through untouched: no timestamp column,
+         * or a cell that is not a number, and the row is emitted as-is rather
+         * than guessed at.
+         */
+        function mergeCsvParts(parts) {
+            const out = [];
+            let headerLine = null;
+            let timestampCol = -1;
+            let eol = '\n';
+            let lastValue = null;
+            let gap = null;
+            let shifted = 0;
+
+            for (const part of parts) {
+                if (headerLine === null && part.text.includes('\r\n')) eol = '\r\n';
+
+                const rows = part.text.split(/\r?\n/);
+                let body;
+
+                if (headerLine === null) {
+                    headerLine = rows[0];
+                    timestampCol = findTimestampColumn(headerLine);
+                    out.push(headerLine);
+                    body = rows.slice(1);
+                } else {
+                    body = rows[0] === headerLine ? rows.slice(1) : rows.slice();
+                }
+
+                while (body.length && body[body.length - 1].trim() === '') body.pop();
+                if (!body.length) continue;
+
+                const offset = (timestampCol >= 0 && lastValue !== null)
+                    ? lastValue + (gap || 0)
+                    : 0;
+                if (offset > 0) shifted++;
+
+                const stamps = [];
+                for (const row of body) {
+                    if (timestampCol < 0 || row.trim() === '') {
+                        out.push(row);
+                        continue;
+                    }
+                    const cells = row.split(',');
+                    const raw = Number(cells[timestampCol]);
+                    if (!Number.isFinite(raw)) {
+                        out.push(row);
+                        continue;
+                    }
+                    const value = raw + offset;
+                    cells[timestampCol] = String(value);
+                    out.push(cells.join(','));
+                    stamps.push(value);
+                    lastValue = value;
+                }
+
+                const step = medianStep(stamps);
+                if (step !== null) gap = step;
+            }
+
+            return {
+                // Keeps the device's own line endings; the old merge produced
+                // CRLF in the first part and LF in the rest.
+                text: out.join(eol) + eol,
+                shifted,
+                hasTimestamp: timestampCol >= 0,
+            };
+        }
+
         async function startDownload(mode = 'save') {
             const btn = document.getElementById('downloadBtn');
             const syncBtn = document.getElementById('mergeSyncBtn');
@@ -2179,6 +2288,9 @@
                 if (!groups.has(key)) groups.set(key, []);
                 groups.get(key).push(f.name);
             }
+            // The device's listing order is not guaranteed, and a plain string
+            // sort puts -10 straight after -1, which would interleave the rows.
+            for (const members of groups.values()) members.sort(comparePartNames);
 
             if (files.length === 0) {
                 log(`No log files on the device`, 'success');
@@ -2208,7 +2320,6 @@
             for (const [outName, members] of groups) {
                 log(`── Merging → <strong>${outName}</strong>`, 'info');
                 const parts = [];
-                let headerLine = null;
                 let groupErr = false;
 
                 const deleteAfter = document.getElementById('deleteAfterDownload').checked;
@@ -2222,18 +2333,9 @@
                         const text = await downloadText(url, name, expected, setFileProgress);
                         endFileProgress();
                         setFileStatus(name, 'downloaded');
-                        const lines = text.split(/\r?\n/);
-
-                        if (headerLine === null) {
-                            // First part: keep everything including the header
-                            headerLine = lines[0];
-                            parts.push(text.trimEnd());
-                        } else {
-                            // Subsequent parts: skip the header row if it matches
-                            const body = (lines[0] === headerLine ? lines.slice(1) : lines)
-                                .join('\n').trimEnd();
-                            if (body) parts.push(body);
-                        }
+                        // Collected raw; the header dedup and timestamp
+                        // continuation happen once, in mergeCsvParts.
+                        parts.push({ name, text });
 
                         log(`&nbsp;&nbsp;✓ ${name} (${(text.length / 1024).toFixed(1)} KB)`, 'success');
 
@@ -2265,8 +2367,20 @@
                     await new Promise(r => setTimeout(r, 80));
                 }
 
-                const merged = parts.join('\n') + '\n';
+                if (!parts.length) {
+                    errGroups++;
+                    log(`✗ ${outName} — no parts could be downloaded`, 'error');
+                    continue;
+                }
+
+                const result = mergeCsvParts(parts);
+                const merged = result.text;
                 const sizeKb = (merged.length / 1024).toFixed(1);
+                if (result.shifted) {
+                    log(`&nbsp;&nbsp;⏱ Continued timestamps across ${result.shifted + 1} part(s)`, 'info');
+                } else if (parts.length > 1 && !result.hasTimestamp) {
+                    log(`&nbsp;&nbsp;⏱ No timestamp column found — parts joined as-is`, 'warn');
+                }
 
                 if (mode === 'sync') {
                     // Held in memory until the device requests are finished —
