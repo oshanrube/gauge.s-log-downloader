@@ -5,7 +5,7 @@
 // NOTE: keep APP_VERSION in sync with the one in index.html.
 // Bumping it invalidates the old cache so users pick up shell updates.
 
-const APP_VERSION = '1.12.0';
+const APP_VERSION = '1.13.0';
 const CACHE_NAME = `gauges-downloader-v${APP_VERSION}`;
 
 // Files that make up the app shell

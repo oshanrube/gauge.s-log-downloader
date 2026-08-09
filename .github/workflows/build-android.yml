@@ -78,14 +78,16 @@ jobs:
         run: |
           set -o pipefail
           if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
-            task=assembleRelease
+            # Play requires an .aab; the .apk is still built alongside it for
+            # sideloading, since a bundle cannot be installed directly.
+            task="assembleRelease bundleRelease"
           else
             task=assembleDebug
           fi
           # No --stacktrace: it buries Gradle's own "What went wrong" summary
           # under hundreds of frames. The log is kept so the failure step below
           # can surface just the useful part.
-          ./gradlew reportSigning "$task" --no-daemon | tee "$RUNNER_TEMP/gradle.log"
+          ./gradlew reportSigning $task --no-daemon | tee "$RUNNER_TEMP/gradle.log"
 
       - name: Show the Gradle failure
         if: failure()
@@ -107,6 +109,13 @@ jobs:
           echo "Built: $apk ($(du -h "$apk" | cut -f1))"
           echo "APK_PATH=$apk" >> "$GITHUB_ENV"
           echo "APK_VARIANT=$variant" >> "$GITHUB_ENV"
+
+          # Only release builds produce a bundle — a debug .aab is no use to Play.
+          aab=$(find android/app/build/outputs/bundle -name '*.aab' 2>/dev/null | head -1)
+          if [ -n "$aab" ]; then
+            echo "Bundle: $aab ($(du -h "$aab" | cut -f1))"
+            echo "AAB_PATH=$aab" >> "$GITHUB_ENV"
+          fi
 
           # The SHA-1 below is what a Google Cloud Android OAuth client must be
           # registered against, alongside the package name. It is printed on
@@ -147,15 +156,22 @@ jobs:
           cp "$APK_PATH" "$versioned"
           cp "$APK_PATH" "$stable"
 
+          # The Play upload artefact, when this was a release build.
+          assets=("$versioned" "$stable")
+          if [ -n "${AAB_PATH:-}" ]; then
+            cp "$AAB_PATH" "gauge-s-downloader-${tag}.aab"
+            assets+=("gauge-s-downloader-${tag}.aab")
+          fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag exists — replacing the APK assets."
-            gh release upload "$tag" "$versioned" "$stable" --clobber
+            echo "Release $tag exists — replacing the assets."
+            gh release upload "$tag" "${assets[@]}" --clobber
             # Older runs published this as a prerelease, which /releases/latest
             # skips over. Promote it so the install link resolves.
             gh release edit "$tag" --prerelease=false --latest
           else
             echo "Creating release $tag."
-            gh release create "$tag" "$versioned" "$stable" \
+            gh release create "$tag" "${assets[@]}" \
               --target "$GITHUB_SHA" \
               --title "Gauge.S Downloader $tag — Android" \
               --latest \
@@ -171,7 +187,8 @@ jobs:
           **Install:** download \`gauge-s-downloader-latest.apk\` below and open it.
           Android will ask you to allow installing from unknown sources.
 
-          Built as a **${APK_VARIANT}** APK for sideloading — not a Play Store release."
+          Built as a **${APK_VARIANT}** APK for sideloading. Any \`.aab\` alongside it is
+          the Play Store upload artefact and cannot be installed directly."
           fi
 
           echo "Release URL: $(gh release view "$tag" --json url -q .url)"

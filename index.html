@@ -381,6 +381,47 @@
             flex-shrink: 0;
         }
 
+        /* Secondary action — same shape as #downloadBtn but outlined, and
+           only shown once Drive is connected (see renderDrive). */
+        #mergeSyncBtn {
+            display: none;
+            width: 100%;
+            margin-top: 10px;
+            padding: 13px 24px;
+            background: rgba(99, 102, 241, 0.1);
+            color: #a5b4fc;
+            border: 1px solid rgba(99, 102, 241, 0.45);
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: background 0.2s ease;
+        }
+
+        #mergeSyncBtn.visible {
+            display: flex;
+        }
+
+        #mergeSyncBtn:hover:not(:disabled) {
+            background: rgba(99, 102, 241, 0.18);
+        }
+
+        #mergeSyncBtn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        #mergeSyncBtn svg {
+            width: 19px;
+            height: 19px;
+            fill: #a5b4fc;
+            flex-shrink: 0;
+        }
+
         /* Progress Section */
         #progressSection {
             display: none;
@@ -1000,6 +1041,13 @@
             Merge &amp; Download
         </button>
 
+        <button id="mergeSyncBtn" onclick="startDownload('sync')">
+            <svg viewBox="0 0 24 24">
+                <path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
+            </svg>
+            Merge &amp; Sync to Drive
+        </button>
+
         <div id="progressSection">
             <div class="progress-header">
                 <span class="progress-label">Downloading files…</span>
@@ -1060,7 +1108,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.12.0';
+        const APP_VERSION = '1.13.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1698,6 +1746,79 @@
             }
         }
 
+        /**
+         * Uploads freshly merged CSVs straight from memory, skipping the
+         * device entirely.
+         *
+         * Anything that fails is written to the phone and queued instead of
+         * being dropped: "Delete after download" is on by default, so by this
+         * point the originals may be gone from the Gauge.S and memory is the
+         * only copy left.
+         */
+        async function uploadMergedDirect(items) {
+            const folder = driveState.folder;
+            const WifiBind = nativePlugin('WifiBind');
+            let unbound = false;
+            let uploaded = 0;
+            const failed = [];
+
+            try {
+                if (WifiBind) {
+                    try {
+                        await WifiBind.unbind();
+                        unbound = true;
+                    } catch (err) {
+                        console.warn('[drive] could not release the Wi-Fi binding:', err);
+                    }
+                }
+
+                const accessToken = await validAccessToken();
+                if (!accessToken) {
+                    failed.push(...items);
+                    driveStatus('Google session expired — merged files kept on the phone.', 'warn');
+                } else {
+                    for (const item of items) {
+                        try {
+                            await uploadToDrive(item.name, item.content, accessToken, folder.id);
+                            uploaded++;
+                            log(`&nbsp;&nbsp;☁ Uploaded ${item.name} to ${folder.name}`, 'success');
+                        } catch (err) {
+                            console.warn('[drive] direct upload failed:', item.name, err);
+                            failed.push(item);
+                            log(`&nbsp;&nbsp;⚠ ${item.name} not uploaded — ${err.message || err}`, 'warn');
+                        }
+                    }
+                }
+            } finally {
+                if (unbound && WifiBind) {
+                    try {
+                        await WifiBind.bind();
+                    } catch (err) {
+                        console.warn('[drive] could not restore the Wi-Fi binding:', err);
+                    }
+                }
+            }
+
+            // Fall back to the phone so a failed upload never loses data.
+            for (const item of failed) {
+                const saved = await saveMerged(item.content, item.name);
+                if (saved.ok) {
+                    log(`&nbsp;&nbsp;💾 Kept ${item.name} on the phone for a later sync`, 'info');
+                } else {
+                    log(`&nbsp;&nbsp;✗ ${item.name} could not be uploaded or saved — ${saved.error}`, 'error');
+                }
+            }
+
+            if (uploaded && !failed.length) {
+                driveStatus(`Uploaded ${uploaded} file(s) to “${folder.name}” — nothing kept on the phone.`, 'success');
+            } else if (uploaded) {
+                driveStatus(`Uploaded ${uploaded}, kept ${failed.length} on the phone to retry.`, 'warn');
+            } else if (failed.length) {
+                driveStatus(`Upload failed — ${failed.length} file(s) kept on the phone.`, 'warn');
+            }
+            renderDrive();
+        }
+
         function driveStatus(message, kind = 'info') {
             const el = document.getElementById('driveStatus');
             if (!el) return;
@@ -1729,6 +1850,11 @@
             const syncBtn = document.getElementById('driveSyncBtn');
             syncBtn.disabled = !token || !folder || !queued;
             syncBtn.textContent = queued ? `Sync ${queued} pending file(s)` : 'Nothing to sync';
+
+            // Only offer the direct-to-Drive run once there is somewhere to
+            // put the files.
+            document.getElementById('mergeSyncBtn')
+                .classList.toggle('visible', Boolean(token && folder));
         }
 
         function toggleGoogleAuth() {
@@ -1984,12 +2110,27 @@
             return base.replace(/\.csv$/i, `${dateSuffix}.csv`);
         }
 
-        async function startDownload() {
+        /**
+         * @param {'save'|'sync'} mode  'save' writes the merged CSVs to the
+         *   phone. 'sync' keeps them in memory and uploads straight to Drive,
+         *   so nothing is left on the device — but it still falls back to
+         *   writing them out if the upload fails, since by then the originals
+         *   may already have been deleted from the Gauge.S.
+         */
+        async function startDownload(mode = 'save') {
             const btn = document.getElementById('downloadBtn');
+            const syncBtn = document.getElementById('mergeSyncBtn');
             const progressSection = document.getElementById('progressSection');
             const summary = document.getElementById('summary');
 
+            if (mode === 'sync' && (!driveState.token || !driveState.folder)) {
+                driveStatus('Connect a Google account and set a folder first.', 'warn');
+                return;
+            }
+
+            const pendingUploads = [];
             btn.disabled = true;
+            if (syncBtn) syncBtn.disabled = true;
             btn.innerHTML = `
       <svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite"><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>
       Fetching file list…`;
@@ -2124,20 +2265,34 @@
                     await new Promise(r => setTimeout(r, 80));
                 }
 
-                // Save the merged file
                 const merged = parts.join('\n') + '\n';
-                const saved = await saveMerged(merged, outName);
+                const sizeKb = (merged.length / 1024).toFixed(1);
 
-                if (!saved.ok) {
-                    errGroups++;
-                    log(`✗ Could not save ${outName} — ${saved.error}`, 'error');
-                } else if (groupErr) {
-                    errGroups++;
-                    log(`⚠ ${outName} saved with some missing parts`, 'warn');
+                if (mode === 'sync') {
+                    // Held in memory until the device requests are finished —
+                    // uploading now is impossible while sockets are pinned to
+                    // the Gauge.S Wi-Fi.
+                    pendingUploads.push({ name: outName, content: merged });
+                    if (groupErr) {
+                        errGroups++;
+                        log(`⚠ ${outName} merged with some missing parts`, 'warn');
+                    } else {
+                        okGroups++;
+                        log(`✓ ${outName} merged (${sizeKb} KB total)`, 'success');
+                    }
                 } else {
-                    okGroups++;
-                    log(`✓ ${outName} saved (${(merged.length / 1024).toFixed(1)} KB total)` +
-                        (saved.location ? ` → ${saved.location}` : ''), 'success');
+                    const saved = await saveMerged(merged, outName);
+                    if (!saved.ok) {
+                        errGroups++;
+                        log(`✗ Could not save ${outName} — ${saved.error}`, 'error');
+                    } else if (groupErr) {
+                        errGroups++;
+                        log(`⚠ ${outName} saved with some missing parts`, 'warn');
+                    } else {
+                        okGroups++;
+                        log(`✓ ${outName} saved (${sizeKb} KB total)` +
+                            (saved.location ? ` → ${saved.location}` : ''), 'success');
+                    }
                 }
 
                 // Brief pause between group downloads
@@ -2159,6 +2314,11 @@
 
             renderDrive();
 
+            if (mode === 'sync' && pendingUploads.length) {
+                log(`─── Uploading to Google Drive ───`, 'info');
+                await uploadMergedDirect(pendingUploads);
+            }
+
             // Best-effort: releases the Wi-Fi binding, uploads whatever is
             // queued, then re-pins. Silent because a field site with no signal
             // is expected, not an error — the queue simply keeps the work.
@@ -2168,6 +2328,7 @@
             }
 
             btn.disabled = false;
+            if (syncBtn) syncBtn.disabled = false;
             btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download Again`;
         }
 
