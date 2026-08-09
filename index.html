@@ -1178,7 +1178,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.17.0';
+        const APP_VERSION = '1.18.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -2776,7 +2776,16 @@
                 sessionLogs.set(outName, merged);
                 const sizeKb = (merged.length / 1024).toFixed(1);
                 if (result.shifted) {
-                    log(`&nbsp;&nbsp;⏱ Continued timestamps across ${result.shifted + 1} part(s)`, 'info');
+                    // Numbered files carry no recording time and the device's
+                    // counter runs on across days, so parts merged from them
+                    // may be from different sessions. Nothing in the data can
+                    // tell them apart — say so rather than presenting an
+                    // invented timeline as fact.
+                    const undated = !/[_-]\d{2}-\d{2}-\d{2}/.test(members[0]);
+                    log(`&nbsp;&nbsp;⏱ Continued timestamps across ${result.shifted + 1} part(s)` +
+                        (undated ? ' — these files carry no clock, so a gap between separate ' +
+                            'recordings would not show up' : ''),
+                        undated ? 'warn' : 'info');
                 } else if (parts.length > 1 && !result.hasTimestamp) {
                     log(`&nbsp;&nbsp;⏱ No timestamp column found — parts joined as-is`, 'warn');
                 }
