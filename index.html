@@ -2411,20 +2411,22 @@
          *
          *   gauge.s1.csv               → gauge.s_26-03-07.csv   (no separator)
          *   Gauge.S-1.csv              → Gauge.S_26-03-07.csv   (date appended)
-         *   Gauge.S_26-02-28_06-11.csv → Gauge.S_26-02-28_06.csv (date already present)
+         *   Gauge.S_26-02-28_06-11.csv → Gauge.S_26-02-28.csv   (one file per day)
+         *   Gauge.S_26-02-28_07-3.csv  → Gauge.S_26-02-28.csv   (…same day, later hour)
          *
          * The separator was required until v1.17.0, so names like gauge.s51.csv
          * kept their number, gave every file a unique key, and nothing merged.
          */
         function groupKey(name) {
-            // Trailing digits, with an optional - or _ in front of them.
+            // The date is checked before anything is stripped: on a name that
+            // is already just a date, the part-number rule would otherwise eat
+            // "-28" as the part number and destroy the date.
+            const dated = name.match(/^(.*?[_-]\d{2}-\d{2}-\d{2})/);
+            if (dated) return `${dated[1]}.csv`;
+
+            // Undated: drop the trailing digits, with an optional - or _ in
+            // front of them, and stamp today's date on instead.
             const base = name.replace(/[-_]?\d+\.csv$/i, '.csv');
-
-            // Check if the base name already contains a date-like segment
-            // (two-digit groups separated by dashes, e.g. _26-02-28 or _26-02-28_06)
-            const hasDate = /[_-]\d{2}-\d{2}-\d{2}/.test(base);
-
-            if (hasDate) return base;
 
             // No date found — append today's date as _YY-MM-DD before .csv
             const now = new Date();
