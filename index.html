@@ -319,6 +319,52 @@
             width: 0%;
         }
 
+        /* ── Per-file progress ────────────────────────────────────────── */
+        #currentFile {
+            display: none;
+            margin-top: -8px;
+        }
+
+        #currentFile.visible {
+            display: block;
+        }
+
+        .progress-bar-bg.thin {
+            height: 5px;
+            margin-bottom: 20px;
+        }
+
+        .current-file-name {
+            color: #a5b4fc;
+            font-size: 0.75rem;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+        }
+
+        .current-file-bytes {
+            color: #64748b;
+            font-size: 0.72rem;
+            flex-shrink: 0;
+            padding-left: 10px;
+        }
+
+        /* Used when the transport can't report a total — the device does not
+           always send Content-Length, and progress events say so via
+           lengthComputable. */
+        .progress-bar-fill.indeterminate {
+            width: 35%;
+            transition: none;
+            animation: slide 1.1s ease-in-out infinite;
+        }
+
+        @keyframes slide {
+            0% { transform: translateX(-110%); }
+            100% { transform: translateX(300%); }
+        }
+
         /* File status table */
         #fileTableWrap {
             background: #0a0c16;
@@ -768,6 +814,7 @@
             #downloadBtn,
             .install-btn,
             .progress-bar-fill,
+            .progress-bar-fill.indeterminate,
             #installPrompt {
                 transition: none;
                 animation: none;
@@ -847,6 +894,16 @@
                 <div class="progress-bar-fill" id="progressFill"></div>
             </div>
 
+            <div id="currentFile">
+                <div class="progress-header">
+                    <span class="current-file-name" id="currentFileName"></span>
+                    <span class="current-file-bytes" id="currentFileBytes"></span>
+                </div>
+                <div class="progress-bar-bg thin">
+                    <div class="progress-bar-fill" id="currentFileFill"></div>
+                </div>
+            </div>
+
             <div class="log-label">Files</div>
             <div id="fileTableWrap">
                 <table id="fileTable">
@@ -888,7 +945,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.8.0';
+        const APP_VERSION = '1.9.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -902,15 +959,23 @@
         }
 
         const addrInput = document.getElementById('deviceAddress');
+
+        function rememberAddress() {
+            if (isServedFromDevice()) return;
+            const value = addrInput.value.trim();
+            if (value) localStorage.setItem('deviceAddress', value);
+        }
+
         if (isServedFromDevice()) {
             addrInput.value = location.host;
             addrInput.disabled = true;
             addrInput.title = 'Served from the device — same-origin mode';
         } else {
             addrInput.value = localStorage.getItem('deviceAddress') || DEFAULT_DEVICE;
-            addrInput.addEventListener('change', () => {
-                localStorage.setItem('deviceAddress', addrInput.value.trim());
-            });
+            // `change` alone misses an address that is typed and then used
+            // straight away without the field losing focus, so the value is
+            // also saved when a run starts (see startDownload).
+            addrInput.addEventListener('change', rememberAddress);
         }
 
         // '' means same-origin (relative URLs)
@@ -1023,7 +1088,8 @@
             processed:      { label: 'Processed ✓',        cls: 'st-processed' },
         };
 
-        const fileRows = new Map(); // filename → status <td>
+        const fileRows = new Map();   // filename → status <td>
+        const sizeByName = new Map(); // filename → size reported by /list
 
         function initFileTable(names) {
             const tbody = document.getElementById('fileTableBody');
@@ -1193,6 +1259,123 @@
             document.getElementById('progressCount').textContent = `${done} / ${total}`;
         }
 
+        // ── Per-file progress ────────────────────────────────────────────
+        function formatBytes(n) {
+            if (n < 1024) return `${n} B`;
+            if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+            return `${(n / 1024 / 1024).toFixed(1)} MB`;
+        }
+
+        function beginFileProgress(name, expectedSize) {
+            document.getElementById('currentFileName').textContent = name;
+            document.getElementById('currentFile').classList.add('visible');
+            // The file list usually reports a size, so the total is known
+            // before a single byte arrives.
+            setFileProgress(0, expectedSize || 0);
+        }
+
+        function setFileProgress(received, total) {
+            const fill = document.getElementById('currentFileFill');
+            const label = document.getElementById('currentFileBytes');
+
+            if (total > 0) {
+                fill.classList.remove('indeterminate');
+                fill.style.width = Math.min(100, Math.round((received / total) * 100)) + '%';
+                label.textContent = `${formatBytes(received)} / ${formatBytes(total)}`;
+            } else {
+                // No Content-Length — show motion rather than a fake percentage.
+                fill.classList.add('indeterminate');
+                fill.style.removeProperty('width');
+                label.textContent = received ? formatBytes(received) : '';
+            }
+        }
+
+        function endFileProgress() {
+            const fill = document.getElementById('currentFileFill');
+            fill.classList.remove('indeterminate');
+            fill.style.width = '0%';
+            document.getElementById('currentFile').classList.remove('visible');
+        }
+
+        /**
+         * Fetch one log file as text, reporting bytes as they arrive.
+         *
+         * Native goes through the file-transfer plugin, the only native
+         * transport that emits progress — CapacitorHttp resolves with the whole
+         * body and reports nothing along the way. It writes to a file, so the
+         * text is read back and the temp copy removed.
+         *
+         * The web path streams the fetch body. Both fall back to a plain
+         * request that simply reports no intermediate progress.
+         */
+        async function downloadText(url, name, expectedSize, onProgress) {
+            const FileTransfer = nativePlugin('FileTransfer');
+            const FS = nativePlugin('Filesystem');
+
+            if (FileTransfer && FS) {
+                const tmp = `gauge-tmp/${name}`;
+                let listener;
+                try {
+                    try {
+                        await FS.mkdir({ path: 'gauge-tmp', directory: 'CACHE', recursive: true });
+                    } catch (_) { /* already exists */ }
+
+                    const { uri } = await FS.getUri({ path: tmp, directory: 'CACHE' });
+
+                    listener = await FileTransfer.addListener('progress', status => {
+                        if (status && status.type === 'download') {
+                            onProgress(status.bytes || 0,
+                                status.lengthComputable ? (status.contentLength || 0) : (expectedSize || 0));
+                        }
+                    });
+
+                    await FileTransfer.downloadFile({ url, path: uri, progress: true, ...REQUEST_TIMEOUTS });
+                    const read = await FS.readFile({ path: tmp, directory: 'CACHE', encoding: 'utf8' });
+                    return typeof read.data === 'string' ? read.data : String(read.data);
+                } finally {
+                    if (listener) await listener.remove();
+                    try {
+                        await FS.deleteFile({ path: tmp, directory: 'CACHE' });
+                    } catch (_) { /* nothing to clean up */ }
+                }
+            }
+
+            // Web: stream the body so progress is real rather than estimated.
+            if (!IS_NATIVE && typeof fetch === 'function') {
+                const res = await fetch(url);
+                if (!res.ok) {
+                    throw httpError({ status: res.status, statusText: res.statusText, body: await res.text() });
+                }
+                const total = Number(res.headers.get('Content-Length')) || expectedSize || 0;
+                if (res.body && typeof res.body.getReader === 'function' && typeof TextDecoder === 'function') {
+                    const reader = res.body.getReader();
+                    const chunks = [];
+                    let received = 0;
+                    for (;;) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        chunks.push(value);
+                        received += value.length;
+                        onProgress(received, total);
+                    }
+                    const joined = new Uint8Array(received);
+                    let offset = 0;
+                    for (const chunk of chunks) {
+                        joined.set(chunk, offset);
+                        offset += chunk.length;
+                    }
+                    return new TextDecoder().decode(joined);
+                }
+                return res.text();
+            }
+
+            // No progress available from this transport.
+            const res = await deviceRequest(url);
+            if (!res.ok) throw httpError(res);
+            onProgress(res.body.length, res.body.length);
+            return res.body;
+        }
+
         function triggerDownload(content, filename) {
             const blob = new Blob([content], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -1309,7 +1492,10 @@
             progressSection.style.display = 'block';
             summary.classList.remove('visible');
             document.getElementById('logBox').innerHTML = '';
+            rememberAddress();
             savedNativeFiles.length = 0;
+            sizeByName.clear();
+            endFileProgress();
             document.getElementById('shareBtn').style.display = 'none';
 
             // ── Step 1: Fetch file list ────────────────────────────────────────────────
@@ -1327,6 +1513,11 @@
                 files = json.filter(item => item.type === 'file');
                 log(`Found <strong>${files.length}</strong> file(s)`, 'success');
                 initFileTable(files.map(f => f.name));
+                // The listing reports sizes, so the per-file bar has a total
+                // even when the transport can't supply one.
+                for (const f of files) {
+                    if (typeof f.size === 'number') sizeByName.set(f.name, f.size);
+                }
             } catch (err) {
                 log(`Failed to fetch file list: ${describeTransportError(err)}`, 'error');
                 btn.disabled = false;
@@ -1380,9 +1571,10 @@
                     const url = fileUrl(name);
                     try {
                         setFileStatus(name, 'downloading');
-                        const res = await deviceRequest(url);
-                        if (!res.ok) throw httpError(res);
-                        const text = res.body;
+                        const expected = sizeByName.get(name) || 0;
+                        beginFileProgress(name, expected);
+                        const text = await downloadText(url, name, expected, setFileProgress);
+                        endFileProgress();
                         setFileStatus(name, 'downloaded');
                         const lines = text.split(/\r?\n/);
 
@@ -1416,6 +1608,7 @@
                             setFileStatus(name, 'processed');
                         }
                     } catch (err) {
+                        endFileProgress();
                         setFileStatus(name, 'downloadFailed');
                         log(`&nbsp;&nbsp;✗ ${name} — ${describeTransportError(err)}`, 'error');
                         groupErr = true;
