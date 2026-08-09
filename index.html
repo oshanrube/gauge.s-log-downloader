@@ -220,6 +220,67 @@
             color: #c7d2fe;
         }
 
+        /* Native only — the web build keeps no copy of a merged file to upload
+           later, so there is nothing to sync. See renderDrive(). */
+        .drive-box {
+            display: none;
+            margin-bottom: 20px;
+            padding: 14px;
+            border: 1px solid #1e2340;
+            border-radius: 12px;
+            background: #0d0f1a;
+        }
+
+        .drive-box.visible {
+            display: block;
+        }
+
+        .drive-title {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #cbd5e1;
+            margin-bottom: 10px;
+        }
+
+        .drive-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .drive-actions button {
+            flex: 1 1 auto;
+            min-width: 140px;
+            padding: 9px 12px;
+            border-radius: 9px;
+            border: 1px solid rgba(99, 102, 241, 0.4);
+            background: rgba(99, 102, 241, 0.12);
+            color: #a5b4fc;
+            font-family: inherit;
+            font-size: 0.78rem;
+            font-weight: 600;
+            cursor: pointer;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .drive-actions button:hover:not(:disabled) {
+            background: rgba(99, 102, 241, 0.2);
+        }
+
+        .drive-actions button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .drive-status {
+            margin-top: 10px;
+            font-size: 0.72rem;
+            line-height: 1.5;
+            color: #64748b;
+        }
+
         #shareBtn {
             display: none;
             width: 100%;
@@ -878,6 +939,16 @@
             <div class="checkbox-label-desc">Remove files from device after successful download</div>
         </div>
 
+        <div class="drive-box" id="driveBox">
+            <div class="drive-title">Google Drive sync</div>
+            <div class="drive-actions">
+                <button type="button" id="driveAuthBtn" onclick="toggleGoogleAuth()">Connect Google account</button>
+                <button type="button" id="driveFolderBtn" onclick="chooseDriveFolder()" disabled>Choose Drive folder…</button>
+                <button type="button" id="driveSyncBtn" onclick="syncToDrive()" disabled>Nothing to sync</button>
+            </div>
+            <div class="drive-status" id="driveStatus">Uploads run after each download, once you're back on the internet.</div>
+        </div>
+
         <button id="downloadBtn" onclick="startDownload()">
             <svg viewBox="0 0 24 24">
                 <path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z" />
@@ -945,7 +1016,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.10.0';
+        const APP_VERSION = '1.11.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1008,14 +1079,14 @@
         const REQUEST_TIMEOUTS = { connectTimeout: 15000, readTimeout: 60000 };
 
         /**
-         * A single request to the device, normalised to
+         * A single HTTP request, normalised to
          * { ok, status, statusText, body } across both transports.
          *
          * `data` must be a plain string on native — the native layer only
          * accepts strings/JSON, which is why the multipart payload for deletes
          * is assembled by hand rather than with FormData.
          */
-        async function deviceRequest(url, options = {}) {
+        async function httpRequest(url, options = {}) {
             const { method = 'GET', headers = {}, data } = options;
             const Http = nativePlugin('CapacitorHttp');
 
@@ -1047,6 +1118,124 @@
             if (data !== undefined) init.body = data;
             const res = await fetch(url, init);
             return { ok: res.ok, status: res.status, statusText: res.statusText, body: await res.text() };
+        }
+
+        // ── Google Drive sync ────────────────────────────────────────────
+        // Client IDs are public by design — an Android client carries no secret
+        // and is protected by the package name plus signing certificate. The
+        // API key only unlocks the Picker and should be restricted to that API
+        // in the Google console.
+        const GOOGLE = {
+            androidClientId: '559820842059-l4e17j7691ch0sqrq9t9js4o7pbtv12a.apps.googleusercontent.com',
+            webClientId: '559820842059-8269pe1bjtutlmn32u0r4fma5labgrc7.apps.googleusercontent.com',
+            apiKey: 'AIzaSyCAEBcpL0LZIAm9DQBJ4EsbmXI7UwdfySg',
+            // drive.file only: the app can touch files it creates and whatever
+            // the user hands it through the Picker — nothing else in the Drive.
+            // Anything broader is a Google "restricted" scope and would drag in
+            // an annual third-party security assessment.
+            scope: 'https://www.googleapis.com/auth/drive.file',
+            authUrl: 'https://accounts.google.com/o/oauth2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+        };
+
+        const DRIVE_TOKEN_KEY = 'driveToken';
+        const DRIVE_FOLDER_KEY = 'driveFolder';
+        const UPLOAD_QUEUE_KEY = 'uploadQueue';
+
+        function loadJson(key, fallback) {
+            try {
+                return JSON.parse(localStorage.getItem(key)) ?? fallback;
+            } catch (_) {
+                return fallback;
+            }
+        }
+
+        const driveState = {
+            get token() { return loadJson(DRIVE_TOKEN_KEY, null); },
+            set token(v) {
+                if (v) localStorage.setItem(DRIVE_TOKEN_KEY, JSON.stringify(v));
+                else localStorage.removeItem(DRIVE_TOKEN_KEY);
+            },
+            get folder() { return loadJson(DRIVE_FOLDER_KEY, null); },
+            set folder(v) {
+                if (v) localStorage.setItem(DRIVE_FOLDER_KEY, JSON.stringify(v));
+                else localStorage.removeItem(DRIVE_FOLDER_KEY);
+            },
+            get queue() { return loadJson(UPLOAD_QUEUE_KEY, []); },
+            set queue(v) { localStorage.setItem(UPLOAD_QUEUE_KEY, JSON.stringify(v)); },
+        };
+
+        function oauthOptions() {
+            return {
+                authorizationBaseUrl: GOOGLE.authUrl,
+                accessTokenEndpoint: GOOGLE.tokenUrl,
+                scope: GOOGLE.scope,
+                // access_type=offline is what makes Google return a refresh
+                // token; without prompt=consent it only sends one on the very
+                // first authorization, so a reinstall would silently lose it.
+                additionalParameters: { access_type: 'offline', prompt: 'consent' },
+                android: {
+                    appId: GOOGLE.androidClientId,
+                    responseType: 'code',
+                    // Registered against the package name + signing SHA-1.
+                    redirectUrl: 'io.github.oshanrube.gaugeslog:/',
+                    pkceEnabled: true,
+                },
+                web: {
+                    appId: GOOGLE.webClientId,
+                    responseType: 'token',
+                    accessTokenEndpoint: '',
+                    redirectUrl: location.origin,
+                    windowOptions: 'height=700,width=520,left=0,top=0',
+                },
+            };
+        }
+
+        /** Stores a token response with an absolute expiry. */
+        function rememberToken(res) {
+            if (!res) return null;
+            const accessToken = res.access_token ||
+                (res.access_token_response && res.access_token_response.access_token);
+            if (!accessToken) return null;
+            const expiresIn = Number(res.expires_in ||
+                (res.access_token_response && res.access_token_response.expires_in) || 3600);
+            const existing = driveState.token;
+            const token = {
+                accessToken,
+                // Google omits refresh_token on re-consent in some cases, so
+                // never overwrite a good one with undefined.
+                refreshToken: res.refresh_token ||
+                    (res.access_token_response && res.access_token_response.refresh_token) ||
+                    (existing && existing.refreshToken) || null,
+                // 60s of slack so a token can't expire mid-upload.
+                expiresAt: Date.now() + (expiresIn - 60) * 1000,
+            };
+            driveState.token = token;
+            return token;
+        }
+
+        async function validAccessToken() {
+            const token = driveState.token;
+            if (!token) return null;
+            if (Date.now() < token.expiresAt) return token.accessToken;
+
+            if (!token.refreshToken) return null;
+            const OAuth = nativePlugin('GenericOAuth2') ||
+                (window.GenericOAuth2 || null);
+            if (!OAuth) return null;
+            try {
+                const res = await OAuth.refreshToken({
+                    appId: IS_NATIVE ? GOOGLE.androidClientId : GOOGLE.webClientId,
+                    accessTokenEndpoint: GOOGLE.tokenUrl,
+                    refreshToken: token.refreshToken,
+                    scope: GOOGLE.scope,
+                });
+                const next = rememberToken(res);
+                return next ? next.accessToken : null;
+            } catch (err) {
+                console.warn('[drive] refresh failed:', err);
+                return null;
+            }
         }
 
         function httpError(res) {
@@ -1195,7 +1384,7 @@
             for (const strategy of orderedDeleteStrategies()) {
                 const { url, headers, data } = strategy.build(filePath);
                 try {
-                    const res = await deviceRequest(url, { method: 'DELETE', headers, data });
+                    const res = await httpRequest(url, { method: 'DELETE', headers, data });
                     if (res.ok) {
                         localStorage.setItem(DELETE_STRATEGY_KEY, strategy.id);
                         return { ok: true, via: strategy.label };
@@ -1238,6 +1427,253 @@
                 console.error('Delete failed:', err);
                 return { ok: false, error: describeTransportError(err) };
             }
+        }
+
+        // ── Drive: authorize, pick a folder, upload ───────────────────────
+        async function authorizeGoogle() {
+            const OAuth = nativePlugin('GenericOAuth2') || window.GenericOAuth2;
+            if (!OAuth) {
+                driveStatus('Google sign-in is only available in the app.', 'warn');
+                return;
+            }
+            driveStatus('Opening Google sign-in…');
+            try {
+                const res = await OAuth.authenticate(oauthOptions());
+                if (!rememberToken(res)) throw new Error('no access token in the response');
+                driveStatus('Google account connected.', 'success');
+            } catch (err) {
+                console.error('[drive] authorize failed:', err);
+                driveStatus(`Sign-in failed: ${err.message || err}`, 'error');
+            }
+            renderDrive();
+        }
+
+        function signOutGoogle() {
+            driveState.token = null;
+            driveState.folder = null;
+            driveStatus('Disconnected. Queued files are kept.');
+            renderDrive();
+        }
+
+        /** Loads Google's Picker script on demand — it needs internet, so it
+         *  must never be a hard dependency of the offline download flow. */
+        function loadPicker() {
+            if (window.google && window.google.picker) return Promise.resolve();
+            return new Promise((resolve, reject) => {
+                const existing = document.getElementById('gapiScript');
+                const script = existing || document.createElement('script');
+                script.id = 'gapiScript';
+                script.src = 'https://apis.google.com/js/api.js';
+                script.onload = () => {
+                    window.gapi.load('picker', {
+                        callback: resolve,
+                        onerror: () => reject(new Error('picker module failed to load')),
+                    });
+                };
+                script.onerror = () => reject(new Error('could not reach apis.google.com — is there internet?'));
+                if (!existing) document.head.appendChild(script);
+            });
+        }
+
+        async function chooseDriveFolder() {
+            const accessToken = await validAccessToken();
+            if (!accessToken) {
+                driveStatus('Connect a Google account first.', 'warn');
+                return;
+            }
+            driveStatus('Loading folder picker…');
+            try {
+                await loadPicker();
+            } catch (err) {
+                driveStatus(`Picker unavailable: ${err.message}`, 'error');
+                return;
+            }
+
+            const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+                .setIncludeFolders(true)
+                .setSelectFolderEnabled(true)
+                .setMimeTypes('application/vnd.google-apps.folder');
+
+            new google.picker.PickerBuilder()
+                .addView(view)
+                .setOAuthToken(accessToken)
+                .setDeveloperKey(GOOGLE.apiKey)
+                // Required inside a Capacitor web view, where the origin is
+                // https://localhost rather than a public site.
+                .setOrigin(location.protocol + '//' + location.host)
+                .setTitle('Choose a folder for Gauge.S logs')
+                .setCallback(data => {
+                    if (data.action !== google.picker.Action.PICKED) return;
+                    const doc = data.docs && data.docs[0];
+                    if (!doc) return;
+                    driveState.folder = { id: doc.id, name: doc.name };
+                    driveStatus(`Folder set to “${doc.name}”.`, 'success');
+                    renderDrive();
+                })
+                .build()
+                .setVisible(true);
+        }
+
+        function multipartUploadBody(boundary, metadata, content) {
+            return `--${boundary}\r\n` +
+                'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+                JSON.stringify(metadata) + '\r\n' +
+                `--${boundary}\r\n` +
+                'Content-Type: text/csv\r\n\r\n' +
+                content + '\r\n' +
+                `--${boundary}--\r\n`;
+        }
+
+        /** Uploads one CSV into the chosen folder. Returns the new file id. */
+        async function uploadToDrive(name, content, accessToken, folderId) {
+            const boundary = '----GaugeSUpload' + Date.now().toString(16);
+            const body = multipartUploadBody(boundary, {
+                name,
+                mimeType: 'text/csv',
+                parents: folderId ? [folderId] : undefined,
+            }, content);
+
+            const res = await httpRequest(
+                'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name',
+                {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        'Content-Type': `multipart/related; boundary=${boundary}`,
+                    },
+                    data: body,
+                }
+            );
+            if (!res.ok) throw httpError(res);
+            try {
+                return JSON.parse(res.body).id;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function queueForUpload(entry) {
+            if (!IS_NATIVE) return; // web keeps no copy to upload later
+            const queue = driveState.queue;
+            // Re-running a merge overwrites the same output file, so replace
+            // rather than queue a duplicate.
+            driveState.queue = [...queue.filter(q => q.name !== entry.name), entry];
+        }
+
+        /**
+         * Drains the upload queue.
+         *
+         * Sockets are pinned to the Gauge.S Wi-Fi, which has no uplink, so the
+         * binding is released for the duration and restored afterwards —
+         * otherwise every request to Google fails no matter the signal.
+         * Anything that doesn't go through stays queued for the next attempt.
+         */
+        async function syncToDrive({ silent = false } = {}) {
+            if (!IS_NATIVE) return;
+            const queue = driveState.queue;
+            if (!queue.length) {
+                if (!silent) driveStatus('Nothing waiting to upload.');
+                return;
+            }
+
+            const folder = driveState.folder;
+            if (!folder) {
+                if (!silent) driveStatus('Choose a Drive folder first.', 'warn');
+                return;
+            }
+
+            const WifiBind = nativePlugin('WifiBind');
+            const FS = nativePlugin('Filesystem');
+            let unbound = false;
+
+            try {
+                if (WifiBind) {
+                    try {
+                        await WifiBind.unbind();
+                        unbound = true;
+                    } catch (err) {
+                        console.warn('[drive] could not release the Wi-Fi binding:', err);
+                    }
+                }
+
+                const accessToken = await validAccessToken();
+                if (!accessToken) {
+                    driveStatus('Google session expired — connect again.', 'warn');
+                    return;
+                }
+
+                let done = 0;
+                const remaining = [];
+                for (const item of queue) {
+                    try {
+                        const read = await FS.readFile({
+                            path: item.path,
+                            directory: item.directory,
+                            encoding: 'utf8',
+                        });
+                        const content = typeof read.data === 'string' ? read.data : String(read.data);
+                        await uploadToDrive(item.name, content, accessToken, folder.id);
+                        done++;
+                        log(`&nbsp;&nbsp;☁ Uploaded ${item.name} to ${folder.name}`, 'success');
+                    } catch (err) {
+                        console.warn('[drive] upload failed:', item.name, err);
+                        remaining.push(item);
+                        log(`&nbsp;&nbsp;⚠ ${item.name} not uploaded — ${err.message || err}`, 'warn');
+                    }
+                }
+                driveState.queue = remaining;
+
+                if (done && !remaining.length) {
+                    driveStatus(`Uploaded ${done} file(s) to “${folder.name}”.`, 'success');
+                } else if (done) {
+                    driveStatus(`Uploaded ${done}, ${remaining.length} still queued.`, 'warn');
+                } else {
+                    driveStatus(`${remaining.length} file(s) still queued — no connection?`, 'warn');
+                }
+            } finally {
+                // Re-pin to Wi-Fi so the device stays reachable for the next run.
+                if (unbound && WifiBind) {
+                    try {
+                        await WifiBind.bind();
+                    } catch (err) {
+                        console.warn('[drive] could not restore the Wi-Fi binding:', err);
+                    }
+                }
+                renderDrive();
+            }
+        }
+
+        function driveStatus(message, kind = 'info') {
+            const el = document.getElementById('driveStatus');
+            if (!el) return;
+            const colors = { info: '#64748b', success: '#34d399', warn: '#fbbf24', error: '#f87171' };
+            el.style.color = colors[kind] || colors.info;
+            el.textContent = message;
+        }
+
+        function renderDrive() {
+            const section = document.getElementById('driveBox');
+            if (!section) return;
+            section.classList.toggle('visible', IS_NATIVE);
+            if (!IS_NATIVE) return;
+
+            const token = driveState.token;
+            const folder = driveState.folder;
+            const queued = driveState.queue.length;
+
+            document.getElementById('driveAuthBtn').textContent =
+                token ? 'Disconnect Google account' : 'Connect Google account';
+            document.getElementById('driveFolderBtn').disabled = !token;
+            document.getElementById('driveFolderBtn').textContent =
+                folder ? `Folder: ${folder.name}` : 'Choose Drive folder…';
+            const syncBtn = document.getElementById('driveSyncBtn');
+            syncBtn.disabled = !token || !folder || !queued;
+            syncBtn.textContent = queued ? `Sync ${queued} pending file(s)` : 'Nothing to sync';
+        }
+
+        function toggleGoogleAuth() {
+            if (driveState.token) signOutGoogle();
+            else authorizeGoogle();
         }
 
         function now() {
@@ -1370,7 +1806,7 @@
             }
 
             // No progress available from this transport.
-            const res = await deviceRequest(url);
+            const res = await httpRequest(url);
             if (!res.ok) throw httpError(res);
             onProgress(res.body.length, res.body.length);
             return res.body;
@@ -1409,14 +1845,23 @@
             let lastErr;
             for (const target of SAVE_TARGETS) {
                 try {
+                    const path = `GaugeS/${filename}`;
                     const res = await FS.writeFile({
-                        path: `GaugeS/${filename}`,
+                        path,
                         data: content,
                         directory: target.directory,
                         encoding: 'utf8',
                         recursive: true,
                     });
                     savedNativeFiles.push(res.uri);
+                    // Queue by location rather than by content: the file is the
+                    // record, so an upload retried days later still finds it.
+                    queueForUpload({
+                        name: filename,
+                        path,
+                        directory: target.directory,
+                        queuedAt: Date.now(),
+                    });
                     return { uri: res.uri, location: target.label };
                 } catch (err) {
                     lastErr = err;
@@ -1502,7 +1947,7 @@
             let files;
             try {
                 log(`Fetching file list from <span style="color:#a5b4fc">${listUrl()}</span>`, 'info');
-                const res = await deviceRequest(listUrl());
+                const res = await httpRequest(listUrl());
                 if (!res.ok) throw httpError(res);
                 let json;
                 try {
@@ -1652,6 +2097,16 @@
                 shareBtn.style.display = 'block';
             }
 
+            renderDrive();
+
+            // Best-effort: releases the Wi-Fi binding, uploads whatever is
+            // queued, then re-pins. Silent because a field site with no signal
+            // is expected, not an error — the queue simply keeps the work.
+            if (IS_NATIVE && driveState.token && driveState.folder && driveState.queue.length) {
+                log(`─── Syncing to Google Drive ───`, 'info');
+                await syncToDrive({ silent: true });
+            }
+
             btn.disabled = false;
             btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download Again`;
         }
@@ -1723,6 +2178,8 @@
 
         // ── Native startup ───────────────────────────────────────────────
         async function initNative() {
+            renderDrive();
+
             // Android hands requests to mobile data when the Gauge.S Wi-Fi has
             // no internet uplink. Pin this app's sockets to Wi-Fi so the device
             // stays reachable. Best-effort and silent: the result is only a
