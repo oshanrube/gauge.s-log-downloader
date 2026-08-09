@@ -138,6 +138,122 @@
             margin-bottom: 20px;
         }
 
+        .tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 20px;
+            padding: 4px;
+            border-radius: 12px;
+            background: #0d0f1a;
+            border: 1px solid #1e2340;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 9px 12px;
+            border: none;
+            border-radius: 9px;
+            background: transparent;
+            color: #64748b;
+            font-family: inherit;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+
+        .tab.active {
+            background: rgba(99, 102, 241, 0.18);
+            color: #c7d2fe;
+        }
+
+        .panel {
+            display: none;
+        }
+
+        .panel.active {
+            display: block;
+        }
+
+        /* ── File manager ─────────────────────────────────────────────── */
+        #fileManagerList {
+            max-height: 260px;
+            overflow-y: auto;
+            margin-top: 10px;
+            border: 1px solid #1e2340;
+            border-radius: 10px;
+        }
+
+        #fileManagerList:empty {
+            display: none;
+        }
+
+        .file-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 10px;
+            border-bottom: 1px solid #161a2e;
+            cursor: pointer;
+        }
+
+        .file-row:last-child {
+            border-bottom: none;
+        }
+
+        .file-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            accent-color: #6366f1;
+            cursor: pointer;
+        }
+
+        .file-row-name {
+            flex: 1;
+            min-width: 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.72rem;
+            color: #cbd5e1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-badges {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .file-badge {
+            padding: 2px 7px;
+            border-radius: 100px;
+            font-size: 0.62rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .b-phone {
+            background: rgba(148, 163, 184, 0.16);
+            color: #94a3b8;
+        }
+
+        .b-drive {
+            background: rgba(52, 211, 153, 0.16);
+            color: #34d399;
+        }
+
+        .b-queued {
+            background: rgba(96, 165, 250, 0.16);
+            color: #93c5fd;
+        }
+
+        .b-warn {
+            background: rgba(251, 191, 36, 0.16);
+            color: #fbbf24;
+        }
+
         .checkbox-wrapper {
             display: flex;
             align-items: center;
@@ -1045,6 +1161,12 @@
         </div>
         <p class="subtitle">Fetches file list from device, groups &amp; concatenates CSV logs by base name</p>
 
+        <div class="tabs">
+            <button type="button" class="tab active" id="tabDownload" onclick="showTab('download')">Download</button>
+            <button type="button" class="tab" id="tabFiles" onclick="showTab('files')">Files</button>
+        </div>
+
+        <div class="panel active" id="panelDownload">
         <div class="endpoint-box">
             <label for="deviceAddress">Device&nbsp;</label><span class="proto">http://</span><input id="deviceAddress"
                 spellcheck="false" autocomplete="off" placeholder="192.168.4.1" />
@@ -1071,38 +1193,6 @@
             <div class="checkbox-label-desc">Remove files from device after successful download</div>
         </div>
 
-        <div class="drive-box" id="analyseBox">
-            <div class="drive-title">Vehicle &amp; AI analysis</div>
-            <div class="vehicle-grid">
-                <input id="veh_chassis" spellcheck="false" autocomplete="off" placeholder="Chassis (e.g. E36)" />
-                <input id="veh_engine" spellcheck="false" autocomplete="off" placeholder="Engine (e.g. M54B30)" />
-                <input id="veh_ecu" spellcheck="false" autocomplete="off" placeholder="ECU (e.g. MS43)" />
-                <input id="veh_location" spellcheck="false" autocomplete="off" placeholder="Location (town, country)" />
-            </div>
-            <div class="drive-folder-row">
-                <select id="analyseLog"></select>
-                <button type="button" id="analyseRefreshBtn" onclick="refreshDriveLogs()" disabled>From Drive</button>
-            </div>
-            <div class="drive-actions" style="margin-top:8px">
-                <button type="button" id="analyseCopyBtn" onclick="copyAnalysisPrompt()" disabled>Copy AI prompt</button>
-                <button type="button" id="analyseShareBtn" onclick="shareAnalysis()" disabled>Share log &amp; prompt</button>
-            </div>
-            <textarea id="promptFallback" readonly spellcheck="false"></textarea>
-            <div class="drive-status" id="analyseStatus">Fill in the car details, pick a log, then Share to send it to Gemini with the CSV attached.</div>
-        </div>
-
-        <div class="drive-box" id="driveBox">
-            <div class="drive-title">Google Drive sync</div>
-            <div class="drive-actions">
-                <button type="button" id="driveAuthBtn" onclick="toggleGoogleAuth()">Connect Google account</button>
-                <button type="button" id="driveSyncBtn" onclick="syncToDrive()" disabled>Nothing to sync</button>
-            </div>
-            <div class="drive-folder-row">
-                <input id="driveFolderName" spellcheck="false" autocomplete="off" placeholder="Gauge.S Logs" />
-                <button type="button" id="driveFolderBtn" onclick="useDriveFolder()" disabled>Use folder</button>
-            </div>
-            <div class="drive-status" id="driveStatus">Uploads run after each download, once you're back on the internet.</div>
-        </div>
 
         <button id="downloadBtn" onclick="startDownload()">
             <svg viewBox="0 0 24 24">
@@ -1169,6 +1259,56 @@
             <button type="button" id="shareBtn" onclick="shareSavedFiles()">Export merged file(s)…</button>
         </div>
 
+        </div><!-- /panelDownload -->
+
+        <div class="panel" id="panelFiles">
+
+        <div class="drive-box visible" id="filesBox">
+            <div class="drive-title">Merged logs</div>
+            <div class="drive-actions">
+                <button type="button" id="filesRefreshBtn" onclick="refreshFiles()">Refresh</button>
+                <button type="button" id="filesSelectAllBtn" onclick="toggleSelectAllFiles()" disabled>Select all</button>
+                <button type="button" id="filesDeleteBtn" onclick="deleteSelectedFiles()" disabled>Delete selected</button>
+            </div>
+            <div id="fileManagerList"></div>
+            <div class="drive-status" id="filesStatus">No merged logs yet.</div>
+        </div>
+
+        <div class="drive-box" id="analyseBox">
+            <div class="drive-title">Vehicle &amp; AI analysis</div>
+            <div class="vehicle-grid">
+                <input id="veh_chassis" spellcheck="false" autocomplete="off" placeholder="Chassis (e.g. E36)" />
+                <input id="veh_engine" spellcheck="false" autocomplete="off" placeholder="Engine (e.g. M54B30)" />
+                <input id="veh_ecu" spellcheck="false" autocomplete="off" placeholder="ECU (e.g. MS43)" />
+                <input id="veh_location" spellcheck="false" autocomplete="off" placeholder="Location (town, country)" />
+            </div>
+            <div class="drive-folder-row">
+                <select id="analyseLog"></select>
+                <button type="button" id="analyseRefreshBtn" onclick="refreshDriveLogs()" disabled>From Drive</button>
+            </div>
+            <div class="drive-actions" style="margin-top:8px">
+                <button type="button" id="analyseCopyBtn" onclick="copyAnalysisPrompt()" disabled>Copy AI prompt</button>
+                <button type="button" id="analyseShareBtn" onclick="shareAnalysis()" disabled>Share log &amp; prompt</button>
+            </div>
+            <textarea id="promptFallback" readonly spellcheck="false"></textarea>
+            <div class="drive-status" id="analyseStatus">Fill in the car details, pick a log, then Share to send it to Gemini with the CSV attached.</div>
+        </div>
+
+        <div class="drive-box" id="driveBox">
+            <div class="drive-title">Google Drive sync</div>
+            <div class="drive-actions">
+                <button type="button" id="driveAuthBtn" onclick="toggleGoogleAuth()">Connect Google account</button>
+                <button type="button" id="driveSyncBtn" onclick="syncToDrive()" disabled>Nothing to sync</button>
+            </div>
+            <div class="drive-folder-row">
+                <input id="driveFolderName" spellcheck="false" autocomplete="off" placeholder="Gauge.S Logs" />
+                <button type="button" id="driveFolderBtn" onclick="useDriveFolder()" disabled>Use folder</button>
+            </div>
+            <div class="drive-status" id="driveStatus">Uploads run after each download, once you're back on the internet.</div>
+        </div>
+
+        </div><!-- /panelFiles -->
+
         <div class="footer">
             <span class="offline-badge" id="offlineBadge">offline — device requests unavailable</span>
             <span></span>
@@ -1178,7 +1318,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.18.0';
+        const APP_VERSION = '1.19.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1897,19 +2037,51 @@
          * nothing, the phone needs no network, Drive needs both a connection
          * and a round trip.
          */
-        function availableLogs() {
-            const seen = new Set();
-            const out = [];
-            const add = entry => {
-                if (seen.has(entry.name)) return;
-                seen.add(entry.name);
-                out.push(entry);
+        /**
+         * One row per log, gathering everywhere it currently exists.
+         *
+         * A log is routinely in several places at once — merged this run, on
+         * the phone, uploaded to Drive, still queued — and the file manager
+         * needs all of them, not just the first. `availableLogs` narrows this
+         * to a single preferred source for the analyse picker.
+         */
+        function fileInventory() {
+            const byName = new Map();
+            const touch = name => {
+                if (!byName.has(name)) {
+                    byName.set(name, {
+                        name, inSession: false, onPhone: false, inDrive: false, queued: false,
+                    });
+                }
+                return byName.get(name);
             };
 
-            for (const name of sessionLogs.keys()) add({ name, source: 'session' });
-            for (const l of loadJson(LOGS_KEY, [])) add({ ...l, source: 'phone' });
-            for (const d of loadJson(DRIVE_LOGS_KEY, [])) add({ ...d, source: 'drive' });
-            return out;
+            for (const name of sessionLogs.keys()) touch(name).inSession = true;
+            for (const l of loadJson(LOGS_KEY, [])) {
+                const e = touch(l.name);
+                e.onPhone = true;
+                e.path = l.path;
+                e.directory = l.directory;
+                e.savedAt = l.savedAt;
+            }
+            for (const d of loadJson(DRIVE_LOGS_KEY, [])) {
+                const e = touch(d.name);
+                e.inDrive = true;
+                e.driveId = d.id;
+                e.modifiedTime = d.modifiedTime;
+            }
+            for (const q of driveState.queue) touch(q.name).queued = true;
+
+            return [...byName.values()].sort((a, b) => comparePartNames(a.name, b.name));
+        }
+
+        function availableLogs() {
+            // Cheapest source first: memory needs nothing, the phone needs no
+            // network, Drive needs a connection and a round trip.
+            return fileInventory().map(e => ({
+                ...e,
+                source: e.inSession ? 'session' : e.onPhone ? 'phone' : 'drive',
+            }));
         }
 
         /** Lists the logs this app has put in the sync folder. */
@@ -2127,6 +2299,187 @@
             document.getElementById('analyseRefreshBtn').disabled =
                 !driveState.token || !driveState.folder;
             if (none) analyseStatus('Run a download first, or pull your uploaded logs from Drive.');
+        }
+
+        // ── File manager ─────────────────────────────────────────────────
+        function filesStatus(message, kind = 'info') {
+            const el = document.getElementById('filesStatus');
+            if (!el) return;
+            const colors = { info: '#64748b', success: '#34d399', warn: '#fbbf24', error: '#f87171' };
+            el.style.color = colors[kind] || colors.info;
+            el.textContent = message;
+        }
+
+        function selectedFileNames() {
+            return [...document.querySelectorAll('#fileManagerList input[type="checkbox"]:checked')]
+                .map(cb => cb.value);
+        }
+
+        function onFileSelectionChanged() {
+            const count = selectedFileNames().length;
+            const btn = document.getElementById('filesDeleteBtn');
+            btn.disabled = count === 0;
+            btn.textContent = count ? `Delete ${count} selected` : 'Delete selected';
+        }
+
+        function toggleSelectAllFiles() {
+            const boxes = [...document.querySelectorAll('#fileManagerList input[type="checkbox"]')];
+            const allOn = boxes.length > 0 && boxes.every(b => b.checked);
+            for (const b of boxes) b.checked = !allOn;
+            document.getElementById('filesSelectAllBtn').textContent = allOn ? 'Select all' : 'Select none';
+            onFileSelectionChanged();
+        }
+
+        function renderFiles() {
+            const list = document.getElementById('fileManagerList');
+            if (!list) return;
+            const entries = fileInventory();
+            list.innerHTML = '';
+
+            for (const e of entries) {
+                const row = document.createElement('label');
+                row.className = 'file-row';
+
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.value = e.name;
+                box.addEventListener('change', onFileSelectionChanged);
+
+                const name = document.createElement('span');
+                name.className = 'file-row-name';
+                name.textContent = e.name;
+
+                const badges = document.createElement('span');
+                badges.className = 'file-badges';
+                const add = (text, cls) => {
+                    const b = document.createElement('span');
+                    b.className = `file-badge ${cls}`;
+                    b.textContent = text;
+                    badges.appendChild(b);
+                };
+                if (e.onPhone) add('phone', 'b-phone');
+                if (e.inDrive) add('Drive', 'b-drive');
+                if (e.queued) add('queued', 'b-queued');
+                // Merged this run but written nowhere yet — a Merge & Sync run
+                // that has not uploaded, so it exists only in memory.
+                if (!e.onPhone && !e.inDrive && e.inSession) add('unsaved', 'b-warn');
+
+                row.appendChild(box);
+                row.appendChild(name);
+                row.appendChild(badges);
+                list.appendChild(row);
+            }
+
+            document.getElementById('filesSelectAllBtn').disabled = entries.length === 0;
+            document.getElementById('filesSelectAllBtn').textContent = 'Select all';
+            onFileSelectionChanged();
+
+            if (!entries.length) {
+                filesStatus('No merged logs yet — run a download, or pull the list from Drive.');
+            } else {
+                const synced = entries.filter(e => e.inDrive).length;
+                filesStatus(`${entries.length} log(s) · ${synced} in Drive · ` +
+                    `${entries.filter(e => e.queued).length} waiting to upload`);
+            }
+        }
+
+        async function refreshFiles() {
+            if (driveState.token && driveState.folder) {
+                await refreshDriveLogs();
+            }
+            renderFiles();
+            renderAnalyse();
+            filesStatus('List refreshed.', 'success');
+        }
+
+        async function deleteSelectedFiles() {
+            const names = selectedFileNames();
+            if (!names.length) return;
+
+            const targets = fileInventory().filter(e => names.includes(e.name));
+            const onPhone = targets.filter(e => e.onPhone).length;
+            const inDrive = targets.filter(e => e.inDrive && e.driveId).length;
+
+            const summary = [`Delete ${names.length} log(s)?`, ''];
+            if (onPhone) summary.push(`• ${onPhone} removed from the phone (permanent)`);
+            if (inDrive) summary.push(`• ${inDrive} moved to the Drive bin (recoverable there)`);
+            if (!onPhone && !inDrive) summary.push('• nothing stored — just clearing them from the list');
+            if (!confirm(summary.join('\n'))) return;
+
+            filesStatus('Deleting…');
+            const FS = nativePlugin('Filesystem');
+            const problems = [];
+            const removedFromPhone = new Set();
+            const trashedInDrive = new Set();
+
+            for (const e of targets) {
+                if (!e.onPhone || !FS) continue;
+                try {
+                    await FS.deleteFile({ path: e.path, directory: e.directory });
+                    removedFromPhone.add(e.name);
+                } catch (err) {
+                    // Already gone counts as success — the goal is that it is
+                    // not there, not that we were the one to remove it.
+                    console.warn('[files] local delete failed:', e.name, err);
+                    removedFromPhone.add(e.name);
+                }
+            }
+
+            const driveTargets = targets.filter(e => e.inDrive && e.driveId);
+            if (driveTargets.length) {
+                await withInternet(async () => {
+                    const accessToken = await validAccessToken();
+                    if (!accessToken) {
+                        problems.push('Google session expired — Drive copies were left alone');
+                        return;
+                    }
+                    for (const e of driveTargets) {
+                        try {
+                            // Trashed rather than deleted outright, so a mistake
+                            // is recoverable from the Drive bin.
+                            const res = await httpRequest(
+                                `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(e.driveId)}`,
+                                {
+                                    method: 'PATCH',
+                                    headers: {
+                                        Authorization: `Bearer ${accessToken}`,
+                                        'Content-Type': 'application/json',
+                                    },
+                                    data: JSON.stringify({ trashed: true }),
+                                }
+                            );
+                            if (!res.ok) throw httpError(res);
+                            trashedInDrive.add(e.name);
+                        } catch (err) {
+                            console.warn('[files] drive trash failed:', e.name, err);
+                            problems.push(`${e.name} (Drive): ${err.message || err}`);
+                        }
+                    }
+                });
+            }
+
+            // Forget only what actually went. A Drive copy that survived stays
+            // listed, so a failure is visible rather than silently hidden.
+            localStorage.setItem(LOGS_KEY, JSON.stringify(
+                loadJson(LOGS_KEY, []).filter(l => !removedFromPhone.has(l.name))));
+            localStorage.setItem(DRIVE_LOGS_KEY, JSON.stringify(
+                loadJson(DRIVE_LOGS_KEY, []).filter(l => !trashedInDrive.has(l.name))));
+            // Never leave a deleted file queued, or the next sync re-uploads it.
+            driveState.queue = driveState.queue.filter(q => !removedFromPhone.has(q.name));
+            for (const name of names) {
+                if (removedFromPhone.has(name) || trashedInDrive.has(name)) sessionLogs.delete(name);
+            }
+
+            renderFiles();
+            renderAnalyse();
+            renderDrive();
+
+            if (problems.length) {
+                filesStatus(`Deleted ${removedFromPhone.size} locally, ${trashedInDrive.size} in Drive. ` +
+                    `Problems: ${problems.join('; ')}`, 'warn');
+            } else {
+                filesStatus(`Deleted ${names.length} log(s).`, 'success');
+            }
         }
 
         function driveStatus(message, kind = 'info') {
@@ -2836,6 +3189,7 @@
 
             renderDrive();
             renderAnalyse();
+            renderFiles();
 
             if (mode === 'sync' && pendingUploads.length) {
                 log(`─── Uploading to Google Drive ───`, 'info');
@@ -2924,6 +3278,7 @@
         async function initNative() {
             renderDrive();
             renderAnalyse();
+            renderFiles();
 
             // Android hands requests to mobile data when the Gauge.S Wi-Fi has
             // no internet uplink. Pin this app's sockets to Wi-Fi so the device
@@ -2937,6 +3292,19 @@
                 console.log('[WifiBind]', res && res.message);
             } catch (err) {
                 console.warn('[WifiBind] failed:', err);
+            }
+        }
+
+        function showTab(which) {
+            const isFiles = which === 'files';
+            document.getElementById('panelDownload').classList.toggle('active', !isFiles);
+            document.getElementById('panelFiles').classList.toggle('active', isFiles);
+            document.getElementById('tabDownload').classList.toggle('active', !isFiles);
+            document.getElementById('tabFiles').classList.toggle('active', isFiles);
+            if (isFiles) {
+                renderFiles();
+                renderAnalyse();
+                renderDrive();
             }
         }
 
