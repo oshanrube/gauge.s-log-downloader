@@ -3,7 +3,9 @@
 
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover is what populates env(safe-area-inset-*), which the
+         layout below uses to stay clear of the status bar and home indicator. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Gauge.S File Downloader</title>
     <link rel="manifest" href="./manifest.json" />
     <link rel="icon" type="image/png" href="./icon-192.png" />
@@ -26,7 +28,15 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 24px;
+            /* Insets keep the card clear of the status bar / notch / home
+               indicator. They resolve to 0 when the platform already inset the
+               web view (see adjustMarginsForEdgeToEdge), so this never
+               double-pads. */
+            padding:
+                calc(24px + env(safe-area-inset-top, 0px))
+                calc(24px + env(safe-area-inset-right, 0px))
+                calc(24px + env(safe-area-inset-bottom, 0px))
+                calc(24px + env(safe-area-inset-left, 0px));
         }
 
         .card {
@@ -208,25 +218,6 @@
             font-size: 0.875rem;
             font-weight: 600;
             color: #c7d2fe;
-        }
-
-        /* Shown only in the native build — see IS_NATIVE */
-        .native-badge {
-            display: none;
-            align-items: flex-start;
-            gap: 8px;
-            margin-bottom: 18px;
-            padding: 10px 12px;
-            border: 1px solid rgba(52, 211, 153, 0.25);
-            border-radius: 10px;
-            background: rgba(52, 211, 153, 0.07);
-            font-size: 0.75rem;
-            line-height: 1.5;
-            color: #86efac;
-        }
-
-        .native-badge.visible {
-            display: flex;
         }
 
         #shareBtn {
@@ -695,7 +686,12 @@
         /* ── Mobile / small-screen layout ─────────────────────────────── */
         @media (max-width: 600px) {
             body {
-                padding: 12px;
+                /* A larger top gap than the sides — the status bar sits there. */
+                padding:
+                    calc(28px + env(safe-area-inset-top, 0px))
+                    calc(12px + env(safe-area-inset-right, 0px))
+                    calc(16px + env(safe-area-inset-bottom, 0px))
+                    calc(12px + env(safe-area-inset-left, 0px));
                 align-items: flex-start;
             }
 
@@ -814,11 +810,6 @@
                 spellcheck="false" autocomplete="off" placeholder="192.168.4.1" />
         </div>
 
-        <div class="native-badge" id="nativeBadge">
-            <span>✓</span>
-            <span id="nativeBadgeText">Native build — device requests bypass the browser, so deleting works.</span>
-        </div>
-
         <a class="apk-banner" id="apkBanner"
             href="https://github.com/oshanrube/gauge.s-log-downloader/releases/latest/download/gauge-s-downloader-latest.apk">
             <span class="apk-icon">
@@ -897,7 +888,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.7.0';
+        const APP_VERSION = '1.8.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1539,25 +1530,18 @@
 
         // ── Native startup ───────────────────────────────────────────────
         async function initNative() {
-            const badge = document.getElementById('nativeBadge');
-            const badgeText = document.getElementById('nativeBadgeText');
-            badge.classList.add('visible');
-
             // Android hands requests to mobile data when the Gauge.S Wi-Fi has
             // no internet uplink. Pin this app's sockets to Wi-Fi so the device
-            // stays reachable. Best-effort: never block startup on it.
+            // stays reachable. Best-effort and silent: the result is only a
+            // diagnostic, and a failure still shows up as a reachability error
+            // on the first request, where it is actionable.
             const WifiBind = nativePlugin('WifiBind');
             if (!WifiBind) return;
             try {
                 const res = await WifiBind.bind();
-                badgeText.textContent = res && res.ok
-                    ? `Native build — deletes work, and requests are pinned to Wi-Fi (${res.message}).`
-                    : `Native build — deletes work. Wi-Fi pinning unavailable: ${res && res.message}.`;
+                console.log('[WifiBind]', res && res.message);
             } catch (err) {
                 console.warn('[WifiBind] failed:', err);
-                badgeText.textContent =
-                    'Native build — deletes work. Could not pin requests to Wi-Fi; ' +
-                    'turn mobile data off if the device is unreachable.';
             }
         }
 

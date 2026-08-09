@@ -3,7 +3,8 @@
   "appName": "Gauge.S Downloader",
   "webDir": "www",
   "android": {
-    "allowMixedContent": true
+    "allowMixedContent": true,
+    "adjustMarginsForEdgeToEdge": "auto"
   },
   "server": {
     "androidScheme": "https",
