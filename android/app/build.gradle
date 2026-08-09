@@ -1,14 +1,47 @@
 apply plugin: 'com.android.application'
 
+// ── Version ──────────────────────────────────────────────────────────────
+// Taken from package.json so the native build cannot drift from the web app
+// and the release tag. versionCode must increase for Android to accept an
+// in-place update, so semver is packed into one monotonic integer
+// (1.9.0 -> 10900), leaving room for 100 minors and 100 patches.
+def packageJson = new groovy.json.JsonSlurper().parseText(
+    file("${rootDir}/../package.json").text)
+def (verMajor, verMinor, verPatch) = packageJson.version.tokenize('.')*.toInteger()
+
+// ── Release signing ──────────────────────────────────────────────────────
+// Supplied by CI via environment variables, or locally via gradle properties
+// (put them in ~/.gradle/gradle.properties — never in the repo). When absent,
+// release builds fall back to the debug key so `assembleRelease` still works
+// for anyone without the keystore.
+def releaseStorePath = System.getenv('KEYSTORE_PATH') ?: findProperty('gaugeKeystorePath')
+def releaseStorePassword = System.getenv('KEYSTORE_PASSWORD') ?: findProperty('gaugeKeystorePassword')
+def releaseKeyAlias = System.getenv('KEY_ALIAS') ?: findProperty('gaugeKeyAlias')
+def releaseKeyPassword = System.getenv('KEY_PASSWORD') ?: findProperty('gaugeKeyPassword')
+def hasReleaseSigning = releaseStorePath && releaseStorePassword && releaseKeyAlias &&
+    releaseKeyPassword && file(releaseStorePath).exists()
+
 android {
     namespace "io.github.oshanrube.gaugeslog"
     compileSdk rootProject.ext.compileSdkVersion
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
     defaultConfig {
         applicationId "io.github.oshanrube.gaugeslog"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode verMajor * 10000 + verMinor * 100 + verPatch
+        versionName packageJson.version
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,9 +51,24 @@ android {
     }
     buildTypes {
         release {
+            // Left off deliberately: Capacitor resolves plugins by class name
+            // through reflection, which R8 cannot see, so shrinking here breaks
+            // them in ways that only show up at runtime.
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig hasReleaseSigning ? signingConfigs.release : signingConfigs.debug
         }
+    }
+}
+
+// Makes it obvious in the build log which key was used — a release APK signed
+// with the debug key is the failure worth catching early, since the Google
+// OAuth client is bound to the certificate fingerprint.
+tasks.register('reportSigning') {
+    doLast {
+        println hasReleaseSigning
+            ? "Signing: release keystore (${releaseStorePath})"
+            : 'Signing: DEBUG key — no release keystore configured'
     }
 }
 

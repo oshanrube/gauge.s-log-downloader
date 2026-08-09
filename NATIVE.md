@@ -126,6 +126,54 @@ native layer only accepts string/JSON bodies.
 
 ---
 
+## Release signing
+
+Without a keystore configured, CI builds a **debug** APK signed with the shared
+Android debug key. That is fine for sideloading but has two costs: the
+`debuggable` flag makes Play Protect more suspicious, and — the reason this
+matters now — CI regenerates the debug keystore on fresh runners, so the
+certificate fingerprint changes between builds. A Google OAuth client is bound
+to *package name + certificate SHA-1*, so Drive sign-in would break at random.
+
+### One-time setup
+
+Generate a keystore and **keep it safe** — it is the app's permanent identity:
+
+```bash
+keytool -genkeypair -v -keystore gauge-s-release.jks \
+  -keyalg RSA -keysize 4096 -validity 10000 -alias gauge-s
+base64 -w0 gauge-s-release.jks
+```
+
+Add four repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `KEYSTORE_BASE64` | output of the `base64` command above |
+| `KEYSTORE_PASSWORD` | keystore password |
+| `KEY_ALIAS` | `gauge-s` |
+| `KEY_PASSWORD` | key password (same as the keystore password unless you set another) |
+
+The workflow switches to `assembleRelease` as soon as `KEYSTORE_BASE64` exists,
+and falls back to a debug build when it doesn't, so nothing breaks in between.
+Every build prints the certificate SHA-1 under `--- signing certificate ---`;
+that is the fingerprint to register with Google.
+
+Locally, put `gaugeKeystorePath` / `gaugeKeystorePassword` / `gaugeKeyAlias` /
+`gaugeKeyPassword` in `~/.gradle/gradle.properties` — never in the repo.
+
+> ⚠️ **Back up the keystore.** Lose it and you can never publish an update that
+> installs over the existing app again.
+>
+> ⚠️ Switching from debug to release changes the signing identity, so the first
+> release-signed build will **not** install over a debug build. Every phone that
+> already has it needs one uninstall and reinstall. Do this before more people
+> install it.
+
+`versionCode` and `versionName` come from `package.json` — semver is packed as
+`major*10000 + minor*100 + patch` (1.9.0 → 10900) so it always increases, which
+Android requires to accept an in-place update.
+
 ## Icons and splash screens
 
 ```bash

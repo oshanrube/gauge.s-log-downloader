@@ -51,21 +51,61 @@ jobs:
           npm run build
           npx cap sync android
 
-      - name: Build debug APK
+      # Present only once the release keystore secrets are configured; until
+      # then the build falls back to a debug APK so nothing is blocked.
+      - name: Decode release keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "path=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Release keystore decoded."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "No KEYSTORE_BASE64 secret — falling back to a debug build."
+          fi
+
+      - name: Build APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
+            ./gradlew reportSigning assembleRelease --no-daemon --stacktrace
+          else
+            ./gradlew reportSigning assembleDebug --no-daemon --stacktrace
+          fi
 
       - name: Report APK details
         run: |
-          apk=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          set -euo pipefail
+          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
+            variant=release
+          else
+            variant=debug
+          fi
+          apk=$(find "android/app/build/outputs/apk/$variant" -name '*.apk' ! -name '*unsigned*' | head -1)
           echo "Built: $apk ($(du -h "$apk" | cut -f1))"
           echo "APK_PATH=$apk" >> "$GITHUB_ENV"
+          echo "APK_VARIANT=$variant" >> "$GITHUB_ENV"
+
+          # The SHA-1 below is what a Google Cloud Android OAuth client must be
+          # registered against, alongside the package name. It is printed on
+          # every build so a key change is impossible to miss.
+          echo "--- signing certificate ---"
+          keytool -printcert -jarfile "$apk" | grep -E 'Owner:|SHA1:|SHA256:' || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: gauge-s-downloader-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: gauge-s-downloader-apk
+          path: ${{ env.APK_PATH }}
           if-no-files-found: error
           retention-days: 30
 
@@ -85,7 +125,7 @@ jobs:
           # identifiable, and a fixed name so the in-app install link
           # (/releases/latest/download/gauge-s-downloader-latest.apk) keeps
           # working across versions without editing index.html.
-          versioned="gauge-s-downloader-${tag}-debug.apk"
+          versioned="gauge-s-downloader-${tag}-${APK_VARIANT}.apk"
           stable="gauge-s-downloader-latest.apk"
           cp "$APK_PATH" "$versioned"
           cp "$APK_PATH" "$stable"
@@ -114,7 +154,7 @@ jobs:
           **Install:** download \`gauge-s-downloader-latest.apk\` below and open it.
           Android will ask you to allow installing from unknown sources.
 
-          This is a **debug-signed** build for sideloading — not a Play Store release."
+          Built as a **${APK_VARIANT}** APK for sideloading — not a Play Store release."
           fi
 
           echo "Release URL: $(gh release view "$tag" --json url -q .url)"
