@@ -274,6 +274,47 @@
             cursor: not-allowed;
         }
 
+        .drive-folder-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .drive-folder-row input {
+            flex: 1;
+            min-width: 0;
+            padding: 9px 10px;
+            border-radius: 9px;
+            border: 1px solid #1e2340;
+            background: #0f1117;
+            color: #a5b4fc;
+            font-family: 'Courier New', monospace;
+            font-size: 0.78rem;
+            outline: none;
+        }
+
+        .drive-folder-row input:focus {
+            border-color: #6366f1;
+        }
+
+        .drive-folder-row button {
+            flex: 0 0 auto;
+            padding: 9px 14px;
+            border-radius: 9px;
+            border: 1px solid rgba(99, 102, 241, 0.4);
+            background: rgba(99, 102, 241, 0.12);
+            color: #a5b4fc;
+            font-family: inherit;
+            font-size: 0.78rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .drive-folder-row button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
         .drive-status {
             margin-top: 10px;
             font-size: 0.72rem;
@@ -943,8 +984,11 @@
             <div class="drive-title">Google Drive sync</div>
             <div class="drive-actions">
                 <button type="button" id="driveAuthBtn" onclick="toggleGoogleAuth()">Connect Google account</button>
-                <button type="button" id="driveFolderBtn" onclick="chooseDriveFolder()" disabled>Choose Drive folder…</button>
                 <button type="button" id="driveSyncBtn" onclick="syncToDrive()" disabled>Nothing to sync</button>
+            </div>
+            <div class="drive-folder-row">
+                <input id="driveFolderName" spellcheck="false" autocomplete="off" placeholder="Gauge.S Logs" />
+                <button type="button" id="driveFolderBtn" onclick="useDriveFolder()" disabled>Use folder</button>
             </div>
             <div class="drive-status" id="driveStatus">Uploads run after each download, once you're back on the internet.</div>
         </div>
@@ -1016,7 +1060,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.11.0';
+        const APP_VERSION = '1.12.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1122,13 +1166,12 @@
 
         // ── Google Drive sync ────────────────────────────────────────────
         // Client IDs are public by design — an Android client carries no secret
-        // and is protected by the package name plus signing certificate. The
-        // API key only unlocks the Picker and should be restricted to that API
-        // in the Google console.
+        // and is protected by the package name plus signing certificate.
+        // No API key here: it only existed for the Picker, which cannot work
+        // inside a web view (see ensureDriveFolder).
         const GOOGLE = {
             androidClientId: '559820842059-l4e17j7691ch0sqrq9t9js4o7pbtv12a.apps.googleusercontent.com',
             webClientId: '559820842059-8269pe1bjtutlmn32u0r4fma5labgrc7.apps.googleusercontent.com',
-            apiKey: 'AIzaSyCAEBcpL0LZIAm9DQBJ4EsbmXI7UwdfySg',
             // drive.file only: the app can touch files it creates and whatever
             // the user hands it through the Picker — nothing else in the Drive.
             // Anything broader is a Google "restricted" scope and would drag in
@@ -1455,63 +1498,75 @@
             renderDrive();
         }
 
-        /** Loads Google's Picker script on demand — it needs internet, so it
-         *  must never be a hard dependency of the offline download flow. */
-        function loadPicker() {
-            if (window.google && window.google.picker) return Promise.resolve();
-            return new Promise((resolve, reject) => {
-                const existing = document.getElementById('gapiScript');
-                const script = existing || document.createElement('script');
-                script.id = 'gapiScript';
-                script.src = 'https://apis.google.com/js/api.js';
-                script.onload = () => {
-                    window.gapi.load('picker', {
-                        callback: resolve,
-                        onerror: () => reject(new Error('picker module failed to load')),
-                    });
-                };
-                script.onerror = () => reject(new Error('could not reach apis.google.com — is there internet?'));
-                if (!existing) document.head.appendChild(script);
+        const DEFAULT_FOLDER_NAME = 'Gauge.S Logs';
+
+        /**
+         * Finds or creates the destination folder, by name, in My Drive.
+         *
+         * The Google Picker is not an option here: it needs a live Google
+         * session in the same browsing context, and sign-in happens in a
+         * Custom Tab, so inside the web view the Picker only ever offers its
+         * own sign-in button and returns its result to the browser instead of
+         * the app.
+         *
+         * Under drive.file the search is naturally scoped to folders this app
+         * created, so a name collision with an unrelated folder of the user's
+         * cannot match — which also means an existing folder is reused rather
+         * than duplicated on every run.
+         */
+        async function ensureDriveFolder(name, accessToken) {
+            const escaped = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            const query = `mimeType='application/vnd.google-apps.folder' and ` +
+                `name='${escaped}' and trashed=false`;
+
+            const found = await httpRequest(
+                'https://www.googleapis.com/drive/v3/files' +
+                `?q=${encodeURIComponent(query)}&fields=${encodeURIComponent('files(id,name)')}&pageSize=10`,
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+            if (!found.ok) throw httpError(found);
+
+            const existing = JSON.parse(found.body).files || [];
+            if (existing.length) return { id: existing[0].id, name: existing[0].name, created: false };
+
+            const made = await httpRequest('https://www.googleapis.com/drive/v3/files?fields=id,name', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+                data: JSON.stringify({
+                    name,
+                    mimeType: 'application/vnd.google-apps.folder',
+                }),
             });
+            if (!made.ok) throw httpError(made);
+            const folder = JSON.parse(made.body);
+            return { id: folder.id, name: folder.name, created: true };
         }
 
-        async function chooseDriveFolder() {
+        async function useDriveFolder() {
             const accessToken = await validAccessToken();
             if (!accessToken) {
                 driveStatus('Connect a Google account first.', 'warn');
                 return;
             }
-            driveStatus('Loading folder picker…');
+            const input = document.getElementById('driveFolderName');
+            const name = (input.value || '').trim() || DEFAULT_FOLDER_NAME;
+            input.value = name;
+
+            driveStatus(`Setting up “${name}” in Drive…`);
             try {
-                await loadPicker();
+                const folder = await ensureDriveFolder(name, accessToken);
+                driveState.folder = { id: folder.id, name: folder.name };
+                driveStatus(folder.created
+                    ? `Created “${folder.name}” in My Drive.`
+                    : `Using existing “${folder.name}”.`, 'success');
             } catch (err) {
-                driveStatus(`Picker unavailable: ${err.message}`, 'error');
-                return;
+                console.error('[drive] folder setup failed:', err);
+                driveStatus(`Could not set up the folder: ${err.message || err}`, 'error');
             }
-
-            const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
-                .setIncludeFolders(true)
-                .setSelectFolderEnabled(true)
-                .setMimeTypes('application/vnd.google-apps.folder');
-
-            new google.picker.PickerBuilder()
-                .addView(view)
-                .setOAuthToken(accessToken)
-                .setDeveloperKey(GOOGLE.apiKey)
-                // Required inside a Capacitor web view, where the origin is
-                // https://localhost rather than a public site.
-                .setOrigin(location.protocol + '//' + location.host)
-                .setTitle('Choose a folder for Gauge.S logs')
-                .setCallback(data => {
-                    if (data.action !== google.picker.Action.PICKED) return;
-                    const doc = data.docs && data.docs[0];
-                    if (!doc) return;
-                    driveState.folder = { id: doc.id, name: doc.name };
-                    driveStatus(`Folder set to “${doc.name}”.`, 'success');
-                    renderDrive();
-                })
-                .build()
-                .setVisible(true);
+            renderDrive();
         }
 
         function multipartUploadBody(boundary, metadata, content) {
@@ -1663,9 +1718,14 @@
 
             document.getElementById('driveAuthBtn').textContent =
                 token ? 'Disconnect Google account' : 'Connect Google account';
-            document.getElementById('driveFolderBtn').disabled = !token;
-            document.getElementById('driveFolderBtn').textContent =
-                folder ? `Folder: ${folder.name}` : 'Choose Drive folder…';
+
+            const folderInput = document.getElementById('driveFolderName');
+            folderInput.disabled = !token;
+            if (!folderInput.value) folderInput.value = folder ? folder.name : DEFAULT_FOLDER_NAME;
+            const folderBtn = document.getElementById('driveFolderBtn');
+            folderBtn.disabled = !token;
+            folderBtn.textContent = folder ? 'Change folder' : 'Use folder';
+
             const syncBtn = document.getElementById('driveSyncBtn');
             syncBtn.disabled = !token || !folder || !queued;
             syncBtn.textContent = queued ? `Sync ${queued} pending file(s)` : 'Nothing to sync';
