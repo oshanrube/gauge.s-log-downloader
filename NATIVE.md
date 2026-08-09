@@ -137,13 +137,37 @@ to *package name + certificate SHA-1*, so Drive sign-in would break at random.
 
 ### One-time setup
 
-Generate a keystore and **keep it safe** — it is the app's permanent identity:
+Generate a keystore and **keep it safe** — it is the app's permanent identity.
+
+macOS / Linux:
 
 ```bash
+cd ~
 keytool -genkeypair -v -keystore gauge-s-release.jks \
   -keyalg RSA -keysize 4096 -validity 10000 -alias gauge-s
 base64 -w0 gauge-s-release.jks
 ```
+
+Windows — run it as **one line**, from your home folder rather than the JDK's
+`bin` directory, which is usually not writable:
+
+```bat
+cd /d %USERPROFILE%
+"C:\Program Files\Java\jdk1.8.0_311\bin\keytool" -genkeypair -v -keystore gauge-s-release.jks -keyalg RSA -keysize 4096 -validity 10000 -alias gauge-s
+```
+
+Then base64 it in **PowerShell** (`base64` does not exist in CMD, and
+`certutil -encode` adds header lines that break decoding):
+
+```powershell
+cd $env:USERPROFILE
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("gauge-s-release.jks")) | Set-Clipboard
+```
+
+At the key-password prompt press Enter to reuse the keystore password, so
+`KEY_PASSWORD` and `KEYSTORE_PASSWORD` are the same value. The DN fields
+(name, organisation, city) are cosmetic for sideloading — `Unknown` is fine.
+JDK 8 warns that JKS is a proprietary format; Gradle reads it fine.
 
 Add four repository secrets (Settings → Secrets and variables → Actions):
 
