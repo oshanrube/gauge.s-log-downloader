@@ -1178,7 +1178,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.16.0';
+        const APP_VERSION = '1.17.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -2404,13 +2404,21 @@
 
         /**
          * Derive the merged output filename from a member filename.
-         * Rule: strip the trailing "-<digits>" segment just before ".csv".
-         *   Gauge.S-1.csv              → Gauge.S_26-03-07.csv  (date appended)
+         *
+         * Rule: drop the trailing part number just before ".csv", whether or
+         * not a separator precedes it. Everything left sharing a name belongs
+         * to one recording and is merged.
+         *
+         *   gauge.s1.csv               → gauge.s_26-03-07.csv   (no separator)
+         *   Gauge.S-1.csv              → Gauge.S_26-03-07.csv   (date appended)
          *   Gauge.S_26-02-28_06-11.csv → Gauge.S_26-02-28_06.csv (date already present)
+         *
+         * The separator was required until v1.17.0, so names like gauge.s51.csv
+         * kept their number, gave every file a unique key, and nothing merged.
          */
         function groupKey(name) {
-            // Strip the trailing -<digits> part
-            const base = name.replace(/-\d+\.csv$/i, '.csv');
+            // Trailing digits, with an optional - or _ in front of them.
+            const base = name.replace(/[-_]?\d+\.csv$/i, '.csv');
 
             // Check if the base name already contains a date-like segment
             // (two-digit groups separated by dashes, e.g. _26-02-28 or _26-02-28_06)
