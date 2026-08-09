@@ -1318,7 +1318,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.19.0';
+        const APP_VERSION = '1.20.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1947,8 +1947,9 @@
                             encoding: 'utf8',
                         });
                         const content = typeof read.data === 'string' ? read.data : String(read.data);
-                        await uploadToDrive(item.name, content, accessToken, folder.id);
+                        const id = await uploadToDrive(item.name, content, accessToken, folder.id);
                         done++;
+                        if (id) rememberDriveFile({ id, name: item.name, modifiedTime: new Date().toISOString() });
                         log(`&nbsp;&nbsp;☁ Uploaded ${item.name} to ${folder.name}`, 'success');
                     } catch (err) {
                         console.warn('[drive] upload failed:', item.name, err);
@@ -1993,8 +1994,9 @@
                 } else {
                     for (const item of items) {
                         try {
-                            await uploadToDrive(item.name, item.content, accessToken, folder.id);
+                            const id = await uploadToDrive(item.name, item.content, accessToken, folder.id);
                             uploaded++;
+                            if (id) rememberDriveFile({ id, name: item.name, modifiedTime: new Date().toISOString() });
                             log(`&nbsp;&nbsp;☁ Uploaded ${item.name} to ${folder.name}`, 'success');
                         } catch (err) {
                             console.warn('[drive] direct upload failed:', item.name, err);
@@ -2117,6 +2119,13 @@
                 analyseStatus(`Could not list Drive: ${err.message || err}`, 'warn');
             }
             renderAnalyse();
+        }
+
+        /** Records a file we just put in Drive, so the UI reflects it at once. */
+        function rememberDriveFile(entry) {
+            const cache = loadJson(DRIVE_LOGS_KEY, []).filter(d => d.name !== entry.name);
+            cache.unshift(entry);
+            localStorage.setItem(DRIVE_LOGS_KEY, JSON.stringify(cache));
         }
 
         async function readLogContent(name) {
