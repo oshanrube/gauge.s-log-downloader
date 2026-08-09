@@ -5,6 +5,9 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 include ':capacitor-community-generic-oauth2'
 project(':capacitor-community-generic-oauth2').projectDir = new File('../node_modules/@capacitor-community/generic-oauth2/android')
 
+include ':capacitor-clipboard'
+project(':capacitor-clipboard').projectDir = new File('../node_modules/@capacitor/clipboard/android')
+
 include ':capacitor-file-transfer'
 project(':capacitor-file-transfer').projectDir = new File('../node_modules/@capacitor/file-transfer/android')
 

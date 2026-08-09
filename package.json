@@ -1,6 +1,6 @@
 {
   "name": "gauge-s-log-downloader",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "private": true,
   "description": "Native (Capacitor) build of the Gauge.S log downloader — talks to the device over the OS HTTP stack so DELETE works without a CORS preflight.",
   "scripts": {
@@ -17,6 +17,7 @@
   "dependencies": {
     "@capacitor-community/generic-oauth2": "^7.1.0",
     "@capacitor/android": "^7.0.0",
+    "@capacitor/clipboard": "^7.0.4",
     "@capacitor/core": "^7.0.0",
     "@capacitor/file-transfer": "^1.0.12",
     "@capacitor/filesystem": "^7.0.0",

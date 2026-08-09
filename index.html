@@ -315,6 +315,56 @@
             cursor: not-allowed;
         }
 
+        .vehicle-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .vehicle-grid input {
+            min-width: 0;
+            padding: 9px 10px;
+            border-radius: 9px;
+            border: 1px solid #1e2340;
+            background: #0f1117;
+            color: #e2e8f0;
+            font-family: inherit;
+            font-size: 0.78rem;
+            outline: none;
+        }
+
+        .vehicle-grid input:focus {
+            border-color: #6366f1;
+        }
+
+        .drive-folder-row select {
+            flex: 1;
+            min-width: 0;
+            padding: 9px 10px;
+            border-radius: 9px;
+            border: 1px solid #1e2340;
+            background: #0f1117;
+            color: #a5b4fc;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            outline: none;
+        }
+
+        #promptFallback {
+            display: none;
+            width: 100%;
+            height: 140px;
+            margin-top: 8px;
+            padding: 10px;
+            border-radius: 9px;
+            border: 1px solid #1e2340;
+            background: #0f1117;
+            color: #94a3b8;
+            font-family: 'Courier New', monospace;
+            font-size: 0.68rem;
+            resize: vertical;
+        }
+
         .drive-status {
             margin-top: 10px;
             font-size: 0.72rem;
@@ -1021,6 +1071,25 @@
             <div class="checkbox-label-desc">Remove files from device after successful download</div>
         </div>
 
+        <div class="drive-box" id="analyseBox">
+            <div class="drive-title">Vehicle &amp; AI analysis</div>
+            <div class="vehicle-grid">
+                <input id="veh_chassis" spellcheck="false" autocomplete="off" placeholder="Chassis (e.g. E36)" />
+                <input id="veh_engine" spellcheck="false" autocomplete="off" placeholder="Engine (e.g. M54B30)" />
+                <input id="veh_ecu" spellcheck="false" autocomplete="off" placeholder="ECU (e.g. MS43)" />
+                <input id="veh_location" spellcheck="false" autocomplete="off" placeholder="Location (town, country)" />
+            </div>
+            <div class="drive-folder-row">
+                <select id="analyseLog"></select>
+            </div>
+            <div class="drive-actions" style="margin-top:8px">
+                <button type="button" id="analyseCopyBtn" onclick="copyAnalysisPrompt()" disabled>Copy AI prompt</button>
+                <button type="button" id="analyseShareBtn" onclick="shareAnalysis()" disabled>Share log &amp; prompt</button>
+            </div>
+            <textarea id="promptFallback" readonly spellcheck="false"></textarea>
+            <div class="drive-status" id="analyseStatus">Fill in the car details, pick a log, then Share to send it to Gemini with the CSV attached.</div>
+        </div>
+
         <div class="drive-box" id="driveBox">
             <div class="drive-title">Google Drive sync</div>
             <div class="drive-actions">
@@ -1108,7 +1177,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.14.0';
+        const APP_VERSION = '1.15.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1819,6 +1888,171 @@
             renderDrive();
         }
 
+        // ── Analyse panel ────────────────────────────────────────────────
+        function availableLogs() {
+            const stored = loadJson(LOGS_KEY, []);
+            const names = new Set(stored.map(l => l.name));
+            const extras = [...sessionLogs.keys()]
+                .filter(n => !names.has(n))
+                .map(name => ({ name, inMemory: true }));
+            return [...extras, ...stored];
+        }
+
+        async function readLogContent(name) {
+            if (sessionLogs.has(name)) return sessionLogs.get(name);
+            const entry = loadJson(LOGS_KEY, []).find(l => l.name === name);
+            const FS = nativePlugin('Filesystem');
+            if (!entry || !FS) return null;
+            const read = await FS.readFile({
+                path: entry.path, directory: entry.directory, encoding: 'utf8',
+            });
+            return typeof read.data === 'string' ? read.data : String(read.data);
+        }
+
+        function analyseStatus(message, kind = 'info') {
+            const el = document.getElementById('analyseStatus');
+            if (!el) return;
+            const colors = { info: '#64748b', success: '#34d399', warn: '#fbbf24', error: '#f87171' };
+            el.style.color = colors[kind] || colors.info;
+            el.textContent = message;
+        }
+
+        async function selectedLog() {
+            const select = document.getElementById('analyseLog');
+            const name = select && select.value;
+            if (!name) {
+                analyseStatus('No log selected — run a download first.', 'warn');
+                return null;
+            }
+            let text;
+            try {
+                text = await readLogContent(name);
+            } catch (err) {
+                analyseStatus(`Could not read ${name}: ${err.message || err}`, 'error');
+                return null;
+            }
+            if (!text) {
+                analyseStatus(`${name} is no longer on the phone.`, 'warn');
+                return null;
+            }
+            return { name, text };
+        }
+
+        /**
+         * Resolves a file URI to attach. A Merge & Sync run leaves nothing on
+         * disk, so in that case the in-memory copy is written to the cache
+         * purely so there is something to hand to the share sheet.
+         */
+        async function shareableFileUri(name, text) {
+            const FS = nativePlugin('Filesystem');
+            if (!FS) return null;
+
+            const entry = loadJson(LOGS_KEY, []).find(l => l.name === name);
+            if (entry) {
+                try {
+                    const { uri } = await FS.getUri({ path: entry.path, directory: entry.directory });
+                    return uri;
+                } catch (err) {
+                    console.warn('[analyse] saved copy missing, falling back to cache:', err);
+                }
+            }
+
+            try {
+                const res = await FS.writeFile({
+                    path: `GaugeS/share/${name}`,
+                    data: text,
+                    directory: 'CACHE',
+                    encoding: 'utf8',
+                    recursive: true,
+                });
+                return res.uri;
+            } catch (err) {
+                console.warn('[analyse] could not stage the file for sharing:', err);
+                return null;
+            }
+        }
+
+        async function copyAnalysisPrompt() {
+            const log = await selectedLog();
+            if (!log) return;
+            const prompt = buildAnalysisPrompt(log.name, saveVehicle());
+            const Clipboard = nativePlugin('Clipboard');
+            try {
+                if (Clipboard) await Clipboard.write({ string: prompt });
+                else await navigator.clipboard.writeText(prompt);
+                analyseStatus('Prompt copied. Paste it into Gemini and attach the CSV — ' +
+                    'or use Share to send both at once.', 'success');
+            } catch (err) {
+                console.warn('[analyse] clipboard failed:', err);
+                // Last resort: show it so it can be selected by hand.
+                const box = document.getElementById('promptFallback');
+                box.value = prompt;
+                box.style.display = 'block';
+                analyseStatus('Could not reach the clipboard — the prompt is below, copy it manually.', 'warn');
+            }
+        }
+
+        /** Shares the prompt and the CSV together, so Gemini receives both. */
+        async function shareAnalysis() {
+            const log = await selectedLog();
+            if (!log) return;
+            const prompt = buildAnalysisPrompt(log.name, saveVehicle());
+            const Share = nativePlugin('Share');
+            if (!Share) {
+                analyseStatus('Sharing is only available in the app.', 'warn');
+                return;
+            }
+
+            analyseStatus('Preparing the file…');
+            const uri = await shareableFileUri(log.name, log.text);
+            const files = uri ? [uri] : undefined;
+
+            try {
+                await Share.share({
+                    title: `Gauge.S log — ${log.name}`,
+                    text: prompt,
+                    ...(files ? { files } : {}),
+                    dialogTitle: 'Send log for analysis',
+                });
+                analyseStatus(files
+                    ? 'Sent the prompt with the CSV attached.'
+                    : 'Sent the prompt — the CSV could not be attached.', files ? 'success' : 'warn');
+            } catch (err) {
+                console.warn('[analyse] share cancelled or failed:', err);
+            }
+        }
+
+        function renderAnalyse() {
+            const section = document.getElementById('analyseBox');
+            if (!section) return;
+            section.classList.toggle('visible', IS_NATIVE);
+            if (!IS_NATIVE) return;
+
+            const vehicle = loadVehicle();
+            for (const f of VEHICLE_FIELDS) {
+                const input = document.getElementById('veh_' + f);
+                if (input && !input.value) input.value = vehicle[f];
+            }
+
+            const select = document.getElementById('analyseLog');
+            const previous = select.value;
+            const logs = availableLogs();
+            select.innerHTML = '';
+            for (const l of logs) {
+                const option = document.createElement('option');
+                option.value = l.name;
+                option.textContent = l.inMemory ? `${l.name} (this run)` : l.name;
+                select.appendChild(option);
+            }
+            if (previous && logs.some(l => l.name === previous)) select.value = previous;
+
+            const none = logs.length === 0;
+            select.disabled = none;
+            document.getElementById('analyseCopyBtn').disabled = none;
+            document.getElementById('analyseShareBtn').disabled = none;
+            if (none) analyseStatus('Run a download first — merged logs appear here.');
+        }
+
         function driveStatus(message, kind = 'info') {
             const el = document.getElementById('driveStatus');
             if (!el) return;
@@ -2048,6 +2282,14 @@
                         directory: target.directory,
                         queuedAt: Date.now(),
                     });
+                    // Kept separately from the upload queue, which empties as
+                    // files go up — this list is what the analyser reads from.
+                    rememberLog({
+                        name: filename,
+                        path,
+                        directory: target.directory,
+                        savedAt: Date.now(),
+                    });
                     return { uri: res.uri, location: target.label };
                 } catch (err) {
                     lastErr = err;
@@ -2117,6 +2359,74 @@
          *   writing them out if the upload fails, since by then the originals
          *   may already have been deleted from the Gauge.S.
          */
+        // ── Vehicle profile ──────────────────────────────────────────────
+        const VEHICLE_KEY = 'vehicleProfile';
+        const VEHICLE_FIELDS = ['chassis', 'engine', 'ecu', 'location'];
+
+        function loadVehicle() {
+            const saved = loadJson(VEHICLE_KEY, {}) || {};
+            const out = {};
+            for (const f of VEHICLE_FIELDS) out[f] = saved[f] || '';
+            return out;
+        }
+
+        function saveVehicle() {
+            const out = {};
+            for (const f of VEHICLE_FIELDS) {
+                out[f] = (document.getElementById('veh_' + f).value || '').trim();
+            }
+            localStorage.setItem(VEHICLE_KEY, JSON.stringify(out));
+            return out;
+        }
+
+        function describeVehicle(v) {
+            const bits = [];
+            if (v.chassis) bits.push(`chassis ${v.chassis}`);
+            if (v.engine) bits.push(`engine ${v.engine}`);
+            if (v.ecu) bits.push(`ECU ${v.ecu}`);
+            return bits.length ? bits.join(', ') : 'an unspecified vehicle';
+        }
+
+        // ── Log analysis ─────────────────────────────────────────────────
+        // Merged logs are far too large to paste into a chat — a ten-part
+        // merge runs to hundreds of KB. What actually helps a model is a
+        // per-channel summary plus a short excerpt, so that is what the prompt
+        // carries; the raw file goes along as an attachment instead.
+        const LOGS_KEY = 'mergedLogs';
+        const MAX_REMEMBERED_LOGS = 30;
+        const sessionLogs = new Map(); // name → content, for this run only
+
+        function rememberLog(entry) {
+            const logs = loadJson(LOGS_KEY, []).filter(l => l.name !== entry.name);
+            logs.unshift(entry);
+            localStorage.setItem(LOGS_KEY, JSON.stringify(logs.slice(0, MAX_REMEMBERED_LOGS)));
+        }
+
+        function buildAnalysisPrompt(name, vehicle) {
+            const lines = [];
+            lines.push(`Attached is a datalog (CSV) from ${describeVehicle(vehicle)}.`);
+            if (vehicle.location) {
+                lines.push(`The car is driven in ${vehicle.location} — please take the typical climate ` +
+                    `there (ambient temperature, humidity, altitude) into account when judging readings.`);
+            }
+            lines.push('');
+            lines.push('Please read the whole file and analyse it for:');
+            lines.push('- sensor faults or implausible readings (stuck, out of range, noisy, disconnected)');
+            lines.push('- signs of a vacuum leak or unmetered air');
+            lines.push('- rough running, misfire or fuel trim problems');
+            lines.push('- general engine health, and anything else that looks wrong');
+            lines.push('');
+            lines.push('Explain your reasoning, cite the channels and values that led you there, and rank ' +
+                'findings by how likely and how serious they are. If the data is insufficient to judge ' +
+                'something, say so rather than guessing.');
+            lines.push('');
+            lines.push(`File: ${name}`);
+            lines.push('Every channel is logged at the same rate. The first column, "Timestamp (ms)", ' +
+                'counts milliseconds from the start of the recording; where several files were merged it ' +
+                'runs continuously across them.');
+            return lines.join('\n');
+        }
+
         // ── CSV merging ──────────────────────────────────────────────────
         /** Natural order, so Gauge.S-10 sorts after Gauge.S-2, not after -1. */
         function comparePartNames(a, b) {
@@ -2375,6 +2685,9 @@
 
                 const result = mergeCsvParts(parts);
                 const merged = result.text;
+                // Held for this session so Merge & Sync runs, which leave
+                // nothing on disk, can still be analysed straight away.
+                sessionLogs.set(outName, merged);
                 const sizeKb = (merged.length / 1024).toFixed(1);
                 if (result.shifted) {
                     log(`&nbsp;&nbsp;⏱ Continued timestamps across ${result.shifted + 1} part(s)`, 'info');
@@ -2427,6 +2740,7 @@
             }
 
             renderDrive();
+            renderAnalyse();
 
             if (mode === 'sync' && pendingUploads.length) {
                 log(`─── Uploading to Google Drive ───`, 'info');
@@ -2514,6 +2828,7 @@
         // ── Native startup ───────────────────────────────────────────────
         async function initNative() {
             renderDrive();
+            renderAnalyse();
 
             // Android hands requests to mobile data when the Gauge.S Wi-Fi has
             // no internet uplink. Pin this app's sockets to Wi-Fi so the device
@@ -2556,6 +2871,10 @@
         }
 
         if (IS_NATIVE) {
+            for (const f of VEHICLE_FIELDS) {
+                const input = document.getElementById('veh_' + f);
+                if (input) input.addEventListener('change', saveVehicle);
+            }
             initNative();
         } else {
             initWeb();
