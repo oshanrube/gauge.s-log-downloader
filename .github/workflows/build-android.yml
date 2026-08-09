@@ -99,7 +99,11 @@ jobs:
           # registered against, alongside the package name. It is printed on
           # every build so a key change is impossible to miss.
           echo "--- signing certificate ---"
-          keytool -printcert -jarfile "$apk" | grep -E 'Owner:|SHA1:|SHA256:' || true
+          # Explicit path rather than bare `keytool`: this is the value needed
+          # to register the Google OAuth client, so it must not go missing if
+          # PATH ever changes.
+          "${JAVA_HOME}/bin/keytool" -printcert -jarfile "$apk" \
+            | grep -E 'Owner:|Valid from:|SHA1:|SHA256:'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
