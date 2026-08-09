@@ -1081,6 +1081,7 @@
             </div>
             <div class="drive-folder-row">
                 <select id="analyseLog"></select>
+                <button type="button" id="analyseRefreshBtn" onclick="refreshDriveLogs()" disabled>From Drive</button>
             </div>
             <div class="drive-actions" style="margin-top:8px">
                 <button type="button" id="analyseCopyBtn" onclick="copyAnalysisPrompt()" disabled>Copy AI prompt</button>
@@ -1177,7 +1178,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.15.0';
+        const APP_VERSION = '1.16.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1724,6 +1725,38 @@
             }
         }
 
+        /**
+         * Runs `fn` with the Wi-Fi binding released, then restores it.
+         *
+         * Sockets are pinned to the Gauge.S access point, which has no uplink,
+         * so anything needing the internet has to step outside that binding —
+         * and must put it back, or the device is unreachable next run. The
+         * restore is in a finally for that reason.
+         */
+        async function withInternet(fn) {
+            const WifiBind = nativePlugin('WifiBind');
+            let unbound = false;
+            try {
+                if (WifiBind) {
+                    try {
+                        await WifiBind.unbind();
+                        unbound = true;
+                    } catch (err) {
+                        console.warn('[net] could not release the Wi-Fi binding:', err);
+                    }
+                }
+                return await fn();
+            } finally {
+                if (unbound && WifiBind) {
+                    try {
+                        await WifiBind.bind();
+                    } catch (err) {
+                        console.warn('[net] could not restore the Wi-Fi binding:', err);
+                    }
+                }
+            }
+        }
+
         function queueForUpload(entry) {
             if (!IS_NATIVE) return; // web keeps no copy to upload later
             const queue = driveState.queue;
@@ -1754,20 +1787,10 @@
                 return;
             }
 
-            const WifiBind = nativePlugin('WifiBind');
             const FS = nativePlugin('Filesystem');
-            let unbound = false;
 
             try {
-                if (WifiBind) {
-                    try {
-                        await WifiBind.unbind();
-                        unbound = true;
-                    } catch (err) {
-                        console.warn('[drive] could not release the Wi-Fi binding:', err);
-                    }
-                }
-
+                await withInternet(async () => {
                 const accessToken = await validAccessToken();
                 if (!accessToken) {
                     driveStatus('Google session expired — connect again.', 'warn');
@@ -1802,15 +1825,8 @@
                 } else {
                     driveStatus(`${remaining.length} file(s) still queued — no connection?`, 'warn');
                 }
+                });
             } finally {
-                // Re-pin to Wi-Fi so the device stays reachable for the next run.
-                if (unbound && WifiBind) {
-                    try {
-                        await WifiBind.bind();
-                    } catch (err) {
-                        console.warn('[drive] could not restore the Wi-Fi binding:', err);
-                    }
-                }
                 renderDrive();
             }
         }
@@ -1826,21 +1842,10 @@
          */
         async function uploadMergedDirect(items) {
             const folder = driveState.folder;
-            const WifiBind = nativePlugin('WifiBind');
-            let unbound = false;
             let uploaded = 0;
             const failed = [];
 
-            try {
-                if (WifiBind) {
-                    try {
-                        await WifiBind.unbind();
-                        unbound = true;
-                    } catch (err) {
-                        console.warn('[drive] could not release the Wi-Fi binding:', err);
-                    }
-                }
-
+            await withInternet(async () => {
                 const accessToken = await validAccessToken();
                 if (!accessToken) {
                     failed.push(...items);
@@ -1858,15 +1863,7 @@
                         }
                     }
                 }
-            } finally {
-                if (unbound && WifiBind) {
-                    try {
-                        await WifiBind.bind();
-                    } catch (err) {
-                        console.warn('[drive] could not restore the Wi-Fi binding:', err);
-                    }
-                }
-            }
+            });
 
             // Fall back to the phone so a failed upload never loses data.
             for (const item of failed) {
@@ -1889,24 +1886,100 @@
         }
 
         // ── Analyse panel ────────────────────────────────────────────────
+        const DRIVE_LOGS_KEY = 'driveLogsCache';
+
+        /**
+         * Every log the app knows about, deduplicated by filename.
+         *
+         * The same log is usually in more than one place — merged this run,
+         * saved on the phone, and uploaded to Drive — so the first source to
+         * claim a name wins. Order is deliberately cheapest-first: memory needs
+         * nothing, the phone needs no network, Drive needs both a connection
+         * and a round trip.
+         */
         function availableLogs() {
-            const stored = loadJson(LOGS_KEY, []);
-            const names = new Set(stored.map(l => l.name));
-            const extras = [...sessionLogs.keys()]
-                .filter(n => !names.has(n))
-                .map(name => ({ name, inMemory: true }));
-            return [...extras, ...stored];
+            const seen = new Set();
+            const out = [];
+            const add = entry => {
+                if (seen.has(entry.name)) return;
+                seen.add(entry.name);
+                out.push(entry);
+            };
+
+            for (const name of sessionLogs.keys()) add({ name, source: 'session' });
+            for (const l of loadJson(LOGS_KEY, [])) add({ ...l, source: 'phone' });
+            for (const d of loadJson(DRIVE_LOGS_KEY, [])) add({ ...d, source: 'drive' });
+            return out;
+        }
+
+        /** Lists the logs this app has put in the sync folder. */
+        async function refreshDriveLogs() {
+            const folder = driveState.folder;
+            if (!driveState.token || !folder) {
+                analyseStatus('Connect Google Drive first to list uploaded logs.', 'warn');
+                return;
+            }
+            analyseStatus('Listing logs in Drive…');
+            try {
+                const files = await withInternet(async () => {
+                    const accessToken = await validAccessToken();
+                    if (!accessToken) throw new Error('Google session expired — connect again');
+                    const query = `'${folder.id}' in parents and trashed=false`;
+                    const res = await httpRequest(
+                        'https://www.googleapis.com/drive/v3/files' +
+                        `?q=${encodeURIComponent(query)}` +
+                        `&fields=${encodeURIComponent('files(id,name,modifiedTime)')}` +
+                        '&orderBy=modifiedTime desc&pageSize=100',
+                        { headers: { Authorization: `Bearer ${accessToken}` } }
+                    );
+                    if (!res.ok) throw httpError(res);
+                    return JSON.parse(res.body).files || [];
+                });
+
+                localStorage.setItem(DRIVE_LOGS_KEY, JSON.stringify(
+                    files.map(f => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime }))
+                ));
+                analyseStatus(`Found ${files.length} log(s) in “${folder.name}”.`, 'success');
+            } catch (err) {
+                console.warn('[analyse] drive listing failed:', err);
+                analyseStatus(`Could not list Drive: ${err.message || err}`, 'warn');
+            }
+            renderAnalyse();
         }
 
         async function readLogContent(name) {
             if (sessionLogs.has(name)) return sessionLogs.get(name);
-            const entry = loadJson(LOGS_KEY, []).find(l => l.name === name);
+
+            const local = loadJson(LOGS_KEY, []).find(l => l.name === name);
             const FS = nativePlugin('Filesystem');
-            if (!entry || !FS) return null;
-            const read = await FS.readFile({
-                path: entry.path, directory: entry.directory, encoding: 'utf8',
+            if (local && FS) {
+                try {
+                    const read = await FS.readFile({
+                        path: local.path, directory: local.directory, encoding: 'utf8',
+                    });
+                    return typeof read.data === 'string' ? read.data : String(read.data);
+                } catch (err) {
+                    // The file was moved or deleted since it was recorded —
+                    // fall through to Drive rather than giving up.
+                    console.warn('[analyse] local copy unreadable, trying Drive:', err);
+                }
+            }
+
+            const remote = loadJson(DRIVE_LOGS_KEY, []).find(l => l.name === name);
+            if (!remote) return null;
+
+            return withInternet(async () => {
+                const accessToken = await validAccessToken();
+                if (!accessToken) throw new Error('Google session expired — connect again');
+                const res = await httpRequest(
+                    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(remote.id)}?alt=media`,
+                    { headers: { Authorization: `Bearer ${accessToken}` } }
+                );
+                if (!res.ok) throw httpError(res);
+                // Cached so sharing straight after copying doesn't re-download.
+                sessionLogs.set(name, res.body);
+                return res.body;
             });
-            return typeof read.data === 'string' ? read.data : String(read.data);
         }
 
         function analyseStatus(message, kind = 'info') {
@@ -2037,11 +2110,12 @@
             const select = document.getElementById('analyseLog');
             const previous = select.value;
             const logs = availableLogs();
+            const WHERE = { session: 'this run', phone: 'on phone', drive: 'Drive' };
             select.innerHTML = '';
             for (const l of logs) {
                 const option = document.createElement('option');
                 option.value = l.name;
-                option.textContent = l.inMemory ? `${l.name} (this run)` : l.name;
+                option.textContent = `${l.name} (${WHERE[l.source] || 'unknown'})`;
                 select.appendChild(option);
             }
             if (previous && logs.some(l => l.name === previous)) select.value = previous;
@@ -2050,7 +2124,9 @@
             select.disabled = none;
             document.getElementById('analyseCopyBtn').disabled = none;
             document.getElementById('analyseShareBtn').disabled = none;
-            if (none) analyseStatus('Run a download first — merged logs appear here.');
+            document.getElementById('analyseRefreshBtn').disabled =
+                !driveState.token || !driveState.folder;
+            if (none) analyseStatus('Run a download first, or pull your uploaded logs from Drive.');
         }
 
         function driveStatus(message, kind = 'info') {
