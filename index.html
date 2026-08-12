@@ -1318,7 +1318,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.20.0';
+        const APP_VERSION = '1.21.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1576,6 +1576,7 @@
             deleted:        { label: 'Deleted',            cls: 'st-deleted' },
             deleteFailed:   { label: 'Failed to delete',   cls: 'st-warn' },
             processed:      { label: 'Processed ✓',        cls: 'st-processed' },
+            notAttempted:   { label: 'Not attempted',      cls: 'st-pending' },
         };
 
         const fileRows = new Map();   // filename → status <td>
@@ -2807,6 +2808,50 @@
          *   writing them out if the upload fails, since by then the originals
          *   may already have been deleted from the Gauge.S.
          */
+        // ── Part download, with retries ──────────────────────────────────
+        const DOWNLOAD_ATTEMPTS = 3;
+        const RETRY_BASE_MS = 700;
+
+        function byteLength(text) {
+            return typeof TextEncoder === 'function'
+                ? new TextEncoder().encode(text).length
+                : text.length;
+        }
+
+        /**
+         * Fetches one part, retrying, and refusing a short read.
+         *
+         * A dropped connection is the obvious failure; a truncated file is the
+         * dangerous one, because it merges without complaint and quietly loses
+         * rows from the middle of the timeline. The listing reports each file's
+         * size, so anything shorter than that is treated as a failed attempt
+         * rather than as data.
+         */
+        async function downloadPart(url, name, expected) {
+            let lastError;
+            for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+                try {
+                    const text = await downloadText(url, name, expected, setFileProgress);
+                    const got = byteLength(text);
+                    if (expected > 0 && got < expected) {
+                        throw new Error(`incomplete — got ${got} of ${expected} bytes`);
+                    }
+                    if (attempt > 1) {
+                        log(`&nbsp;&nbsp;&nbsp;&nbsp;✓ ${name} succeeded on attempt ${attempt}`, 'info');
+                    }
+                    return text;
+                } catch (err) {
+                    lastError = err;
+                    if (attempt < DOWNLOAD_ATTEMPTS) {
+                        log(`&nbsp;&nbsp;&nbsp;&nbsp;↻ ${name} attempt ${attempt} failed ` +
+                            `(${describeTransportError(err)}) — retrying…`, 'warn');
+                        await new Promise(r => setTimeout(r, RETRY_BASE_MS * attempt));
+                    }
+                }
+            }
+            throw lastError;
+        }
+
         // ── Vehicle profile ──────────────────────────────────────────────
         const VEHICLE_KEY = 'vehicleProfile';
         const VEHICLE_FIELDS = ['chassis', 'engine', 'ecu', 'location'];
@@ -3078,56 +3123,57 @@
             for (const [outName, members] of groups) {
                 log(`── Merging → <strong>${outName}</strong>`, 'info');
                 const parts = [];
-                let groupErr = false;
+                let failedPart = null;
 
                 const deleteAfter = document.getElementById('deleteAfterDownload').checked;
 
                 for (const name of members) {
                     const url = fileUrl(name);
+                    const expected = sizeByName.get(name) || 0;
                     try {
                         setFileStatus(name, 'downloading');
-                        const expected = sizeByName.get(name) || 0;
                         beginFileProgress(name, expected);
-                        const text = await downloadText(url, name, expected, setFileProgress);
+                        const text = await downloadPart(url, name, expected);
                         endFileProgress();
                         setFileStatus(name, 'downloaded');
                         // Collected raw; the header dedup and timestamp
                         // continuation happen once, in mergeCsvParts.
                         parts.push({ name, text });
-
                         log(`&nbsp;&nbsp;✓ ${name} (${(text.length / 1024).toFixed(1)} KB)`, 'success');
-
-                        // Delete file if option is enabled
-                        if (deleteAfter) {
-                            setFileStatus(name, 'deleting');
-                            const filePath = `/logs/${name}`;
-                            const result = await deleteFile(filePath);
-                            if (result.ok) {
-                                setFileStatus(name, 'processed');
-                                log(`&nbsp;&nbsp;&nbsp;&nbsp;🗑 Deleted ${name} from device` +
-                                    (result.via ? ` <span style="opacity:.6">(${result.via})</span>` : ''), 'info');
-                            } else {
-                                setFileStatus(name, 'deleteFailed');
-                                log(`&nbsp;&nbsp;&nbsp;&nbsp;⚠ Failed to delete ${name}: ${result.error}`, 'warn');
-                            }
-                        } else {
-                            setFileStatus(name, 'processed');
-                        }
                     } catch (err) {
                         endFileProgress();
                         setFileStatus(name, 'downloadFailed');
                         log(`&nbsp;&nbsp;✗ ${name} — ${describeTransportError(err)}`, 'error');
-                        groupErr = true;
+                        failedPart = name;
                     }
 
                     fetchesDone++;
                     setProgress(fetchesDone, totalFetches);
+                    if (failedPart) break;
                     await new Promise(r => setTimeout(r, 80));
                 }
 
-                if (!parts.length) {
+                // A part that never arrived would leave a hole in the middle of
+                // the merged timeline, and the timestamp continuation would
+                // close that hole silently, presenting a recording that skips
+                // whatever was in the missing file. Abandon the whole group
+                // instead, and delete nothing: the parts that did download stay
+                // on the device so the next run can assemble the log properly.
+                if (failedPart) {
                     errGroups++;
-                    log(`✗ ${outName} — no parts could be downloaded`, 'error');
+                    const untouched = members.length - parts.length - 1;
+                    for (const name of members) {
+                        if (name !== failedPart && !parts.some(p => p.name === name)) {
+                            setFileStatus(name, 'notAttempted');
+                        }
+                    }
+                    if (untouched > 0) {
+                        fetchesDone += untouched;
+                        setProgress(fetchesDone, totalFetches);
+                    }
+                    log(`✗ ${outName} skipped — ${failedPart} would not download after ` +
+                        `${DOWNLOAD_ATTEMPTS} attempts. Nothing was deleted from the device; ` +
+                        `run again to retry the whole log.`, 'error');
                     continue;
                 }
 
@@ -3152,31 +3198,48 @@
                     log(`&nbsp;&nbsp;⏱ No timestamp column found — parts joined as-is`, 'warn');
                 }
 
+                let stored = false;
                 if (mode === 'sync') {
                     // Held in memory until the device requests are finished —
                     // uploading now is impossible while sockets are pinned to
-                    // the Gauge.S Wi-Fi.
+                    // the Gauge.S Wi-Fi. A failed upload falls back to writing
+                    // it out, so the data is safe either way.
                     pendingUploads.push({ name: outName, content: merged });
-                    if (groupErr) {
-                        errGroups++;
-                        log(`⚠ ${outName} merged with some missing parts`, 'warn');
-                    } else {
-                        okGroups++;
-                        log(`✓ ${outName} merged (${sizeKb} KB total)`, 'success');
-                    }
+                    okGroups++;
+                    stored = true;
+                    log(`✓ ${outName} merged (${sizeKb} KB total)`, 'success');
                 } else {
                     const saved = await saveMerged(merged, outName);
-                    if (!saved.ok) {
-                        errGroups++;
-                        log(`✗ Could not save ${outName} — ${saved.error}`, 'error');
-                    } else if (groupErr) {
-                        errGroups++;
-                        log(`⚠ ${outName} saved with some missing parts`, 'warn');
-                    } else {
+                    if (saved.ok) {
                         okGroups++;
+                        stored = true;
                         log(`✓ ${outName} saved (${sizeKb} KB total)` +
                             (saved.location ? ` → ${saved.location}` : ''), 'success');
+                    } else {
+                        errGroups++;
+                        log(`✗ Could not save ${outName} — ${saved.error}`, 'error');
                     }
+                }
+
+                // Deletion waits until the merged output exists. Removing each
+                // part as it arrived meant a later failure left the earlier
+                // ones gone from the device with no complete log to show for
+                // it, and nothing could rebuild them.
+                if (stored && deleteAfter) {
+                    for (const part of parts) {
+                        setFileStatus(part.name, 'deleting');
+                        const outcome = await deleteFile(`/logs/${part.name}`);
+                        if (outcome.ok) {
+                            setFileStatus(part.name, 'processed');
+                            log(`&nbsp;&nbsp;&nbsp;&nbsp;🗑 Deleted ${part.name} from device` +
+                                (outcome.via ? ` <span style="opacity:.6">(${outcome.via})</span>` : ''), 'info');
+                        } else {
+                            setFileStatus(part.name, 'deleteFailed');
+                            log(`&nbsp;&nbsp;&nbsp;&nbsp;⚠ Failed to delete ${part.name}: ${outcome.error}`, 'warn');
+                        }
+                    }
+                } else if (stored) {
+                    for (const part of parts) setFileStatus(part.name, 'processed');
                 }
 
                 // Brief pause between group downloads
