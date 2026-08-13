@@ -1318,7 +1318,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.21.0';
+        const APP_VERSION = '1.22.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -2808,6 +2808,49 @@
          *   writing them out if the upload fails, since by then the originals
          *   may already have been deleted from the Gauge.S.
          */
+        // ── Keeping the phone awake ──────────────────────────────────────
+        // A run can outlast the screen timeout, and once Android suspends the
+        // process the transfer stalls mid-file. Natively this is a screen flag
+        // plus a CPU wake lock; on the web the Wake Lock API keeps the screen
+        // on, which is all a browser can offer.
+        let webWakeLock = null;
+
+        async function keepAwake(on) {
+            const KeepAwake = nativePlugin('KeepAwake');
+            if (KeepAwake) {
+                try {
+                    const res = on ? await KeepAwake.keepAwake() : await KeepAwake.allowSleep();
+                    if (on) console.log('[awake]', JSON.stringify(res));
+                } catch (err) {
+                    console.warn('[awake] failed:', err);
+                }
+                return;
+            }
+
+            try {
+                if (on) {
+                    if (navigator.wakeLock && !webWakeLock) {
+                        webWakeLock = await navigator.wakeLock.request('screen');
+                    }
+                } else if (webWakeLock) {
+                    await webWakeLock.release();
+                    webWakeLock = null;
+                }
+            } catch (err) {
+                console.warn('[awake] web wake lock failed:', err);
+            }
+        }
+
+        // The browser drops a screen wake lock whenever the tab is hidden, so
+        // it has to be taken again on return if a run is still going.
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && downloadRunning && !webWakeLock) {
+                keepAwake(true);
+            }
+        });
+
+        let downloadRunning = false;
+
         // ── Part download, with retries ──────────────────────────────────
         const DOWNLOAD_ATTEMPTS = 3;
         const RETRY_BASE_MS = 700;
@@ -3030,6 +3073,21 @@
         }
 
         async function startDownload(mode = 'save') {
+            if (downloadRunning) return;
+            downloadRunning = true;
+            await keepAwake(true);
+            try {
+                await runDownload(mode);
+            } finally {
+                downloadRunning = false;
+                // Released in a finally: a wake lock left held would keep the
+                // screen on and the CPU awake indefinitely, which is a worse
+                // bug than the stall it exists to prevent.
+                await keepAwake(false);
+            }
+        }
+
+        async function runDownload(mode = 'save') {
             const btn = document.getElementById('downloadBtn');
             const syncBtn = document.getElementById('mergeSyncBtn');
             const progressSection = document.getElementById('progressSection');
