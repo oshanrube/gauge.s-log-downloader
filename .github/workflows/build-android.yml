@@ -11,6 +11,9 @@ on:
       - 'claude/**'
     paths:
       - 'index.html'
+      - 'analyzer.js'
+      - 'analyzer-worker.js'
+      - 'test/**'
       - 'manifest.json'
       - 'sw.js'
       - 'icon-*.png'
@@ -45,6 +48,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # The diagnostic pipeline has no compiler to catch it going wrong: a
+      # broken detector still builds, installs and runs, and simply reports the
+      # wrong thing. These are the assertions that stop that shipping.
+      - name: Run pipeline tests
+        run: npm test
 
       - name: Copy app shell into www/ and sync native project
         run: |

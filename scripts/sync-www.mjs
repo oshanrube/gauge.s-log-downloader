@@ -12,7 +12,10 @@ const out = join(root, 'www');
 
 // sw.js is copied for parity with the hosted app, but the native build does not
 // register it — see the IS_NATIVE branch at the bottom of index.html.
-const SHELL = ['index.html', 'manifest.json', 'icon-192.png', 'icon-512.png', 'sw.js'];
+const SHELL = [
+  'index.html', 'manifest.json', 'icon-192.png', 'icon-512.png', 'sw.js',
+  'analyzer.js', 'analyzer-worker.js',
+];
 
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });

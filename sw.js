@@ -5,7 +5,7 @@
 // NOTE: keep APP_VERSION in sync with the one in index.html.
 // Bumping it invalidates the old cache so users pick up shell updates.
 
-const APP_VERSION = '1.20.0';
+const APP_VERSION = '1.21.0';
 const CACHE_NAME = `gauges-downloader-v${APP_VERSION}`;
 
 // Files that make up the app shell
@@ -15,6 +15,11 @@ const SHELL = [
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
+  // The diagnostic pipeline and the worker that runs it off the UI thread.
+  // Both must be cached: analysis has to work in the field with no internet,
+  // which is the same place the logs are collected.
+  './analyzer.js',
+  './analyzer-worker.js',
 ];
 
 // ── Install: pre-cache the app shell ────────────────────────────────────────
