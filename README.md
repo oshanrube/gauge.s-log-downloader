@@ -92,6 +92,23 @@ The merged files will be named like:
 
 ---
 
+## Analysing a log
+
+Two ways, both from the **Vehicle & AI analysis** box after a download:
+
+- **Analyse in Car Doctor** — hands the log to [Car Doctor](https://github.com/oshanrube/car-doctor),
+  which diagnoses it **on the phone**. Nothing is uploaded and no prompt is involved: it segments the
+  drive into operating states, learns the engine's own ignition map and closed-throttle reference,
+  and reports likely faults with the evidence for each one. Needs the
+  [Car Doctor APK](https://github.com/oshanrube/car-doctor/releases/latest); the button says so if
+  it is not installed.
+- **Share log & prompt** — sends the CSV plus a written prompt to Gemini or any other app, as before.
+
+Car Doctor also accepts the ordinary share sheet, so **Share log & prompt** and **Export merged
+logs** can reach it too. The dedicated button just skips the sheet.
+
+Android app only — both rely on native file sharing.
+
 ## Troubleshooting
 
 | Problem | Fix |

@@ -1289,9 +1289,10 @@
             <div class="drive-actions" style="margin-top:8px">
                 <button type="button" id="analyseCopyBtn" onclick="copyAnalysisPrompt()" disabled>Copy AI prompt</button>
                 <button type="button" id="analyseShareBtn" onclick="shareAnalysis()" disabled>Share log &amp; prompt</button>
+                <button type="button" id="analyseCarDoctorBtn" onclick="analyseInCarDoctor()" disabled>Analyse in Car Doctor</button>
             </div>
             <textarea id="promptFallback" readonly spellcheck="false"></textarea>
-            <div class="drive-status" id="analyseStatus">Fill in the car details, pick a log, then Share to send it to Gemini with the CSV attached.</div>
+            <div class="drive-status" id="analyseStatus">Pick a log, then send it to Car Doctor for offline analysis, or Share it to Gemini with the prompt attached.</div>
         </div>
 
         <div class="drive-box" id="driveBox">
@@ -2276,6 +2277,52 @@
             }
         }
 
+        /**
+         * Hands the selected log to Car Doctor, which analyses it on the phone.
+         *
+         * Different from the Gemini share in two ways worth knowing: nothing leaves the device,
+         * and there is no prompt - Car Doctor reads the CSV directly and reports what it finds.
+         */
+        async function analyseInCarDoctor() {
+            const CarDoctor = nativePlugin('CarDoctor');
+            if (!CarDoctor) {
+                analyseStatus('Car Doctor hand-off is only available in the app.', 'warn');
+                return;
+            }
+
+            const log = await selectedLog();
+            if (!log) return;
+
+            analyseStatus('Preparing the file…');
+            const uri = await shareableFileUri(log.name, log.text);
+            if (!uri) {
+                analyseStatus('Could not stage the log file to hand over.', 'error');
+                return;
+            }
+
+            try {
+                const { installed, downloadUrl } = await CarDoctor.analyse({ uri });
+                if (installed) {
+                    analyseStatus(`Opened ${log.name} in Car Doctor.`, 'success');
+                } else {
+                    // Not an error: it is simply a second app the user has not installed yet.
+                    analyseStatus('Car Doctor is not installed — install it to analyse logs offline.', 'warn');
+                    showCarDoctorLink(downloadUrl);
+                }
+            } catch (err) {
+                console.warn('[analyse] Car Doctor hand-off failed:', err);
+                analyseStatus(`Could not open Car Doctor: ${err.message || err}`, 'error');
+            }
+        }
+
+        /** Offers the Car Doctor download in the prompt box, which is already there for text. */
+        function showCarDoctorLink(url) {
+            const box = document.getElementById('promptFallback');
+            if (!box || !url) return;
+            box.value = url;
+            box.style.display = 'block';
+        }
+
         function renderAnalyse() {
             const section = document.getElementById('analyseBox');
             if (!section) return;
@@ -2305,6 +2352,7 @@
             select.disabled = none;
             document.getElementById('analyseCopyBtn').disabled = none;
             document.getElementById('analyseShareBtn').disabled = none;
+            document.getElementById('analyseCarDoctorBtn').disabled = none;
             document.getElementById('analyseRefreshBtn').disabled =
                 !driveState.token || !driveState.folder;
             if (none) analyseStatus('Run a download first, or pull your uploaded logs from Drive.');
