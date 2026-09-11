@@ -41,6 +41,15 @@
         </provider>
     </application>
 
+    <!--
+      From Android 11 an app cannot see, query or launch another package unless it names it here.
+      Without this entry the Car Doctor hand-off silently reports "not installed" on every modern
+      phone, even with the app sitting on the home screen.
+    -->
+    <queries>
+        <package android:name="dev.cardoctor.app" />
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
