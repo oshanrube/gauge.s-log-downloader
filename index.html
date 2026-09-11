@@ -1038,6 +1038,172 @@
             }
         }
 
+
+        /* ── Diagnosis report ─────────────────────────────────────────── */
+        #diagnoseReport:empty {
+            display: none;
+        }
+
+        .verdict {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 14px;
+            margin-top: 14px;
+            border-radius: 10px;
+            border: 1px solid #1e2340;
+            background: #0d0f1a;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #cbd5e1;
+        }
+
+        .verdict.clean {
+            border-color: rgba(52, 211, 153, 0.35);
+            color: #6ee7b7;
+        }
+
+        .verdict.faults {
+            border-color: rgba(251, 191, 36, 0.35);
+            color: #fcd34d;
+        }
+
+        .finding {
+            margin-top: 12px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid #1e2340;
+            border-left-width: 3px;
+            background: #0d0f1a;
+        }
+
+        /* Severity is carried by the left edge, so a glance down the list
+           reads worst-first without needing to parse any text. */
+        .finding.sev-CRITICAL { border-left-color: #f87171; }
+        .finding.sev-HIGH     { border-left-color: #fb923c; }
+        .finding.sev-MODERATE { border-left-color: #fbbf24; }
+        .finding.sev-LOW      { border-left-color: #60a5fa; }
+        .finding.sev-INFO     { border-left-color: #64748b; }
+
+        .finding-head {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .finding-title {
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: #e2e8f0;
+        }
+
+        .badge {
+            padding: 2px 7px;
+            border-radius: 6px;
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .badge.sev-CRITICAL { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+        .badge.sev-HIGH     { background: rgba(251, 146, 60, 0.18);  color: #fdba74; }
+        .badge.sev-MODERATE { background: rgba(251, 191, 36, 0.18);  color: #fcd34d; }
+        .badge.sev-LOW      { background: rgba(96, 165, 250, 0.18);  color: #93c5fd; }
+        .badge.sev-INFO     { background: rgba(100, 116, 139, 0.18); color: #cbd5e1; }
+
+        .finding-meta {
+            margin-top: 3px;
+            font-size: 0.7rem;
+            color: #64748b;
+        }
+
+        .finding-summary {
+            margin-top: 8px;
+            font-size: 0.8rem;
+            line-height: 1.5;
+            color: #cbd5e1;
+        }
+
+        .finding-section {
+            margin-top: 10px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: #64748b;
+        }
+
+        .finding ul {
+            margin: 4px 0 0;
+            padding-left: 16px;
+            font-size: 0.76rem;
+            line-height: 1.55;
+            color: #94a3b8;
+        }
+
+        .finding ul li strong {
+            color: #cbd5e1;
+            font-weight: 600;
+        }
+
+        .finding .at-time {
+            color: #6366f1;
+        }
+
+        /* Time in each operating state — the reader's guide to how much the
+           findings are worth, since a detector only sees its own states. */
+        .state-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 5px;
+            font-size: 0.73rem;
+            color: #94a3b8;
+        }
+
+        .state-row .state-name {
+            flex: 0 0 40%;
+        }
+
+        .state-bar {
+            flex: 1;
+            height: 5px;
+            border-radius: 3px;
+            background: #161a2e;
+            overflow: hidden;
+        }
+
+        .state-bar span {
+            display: block;
+            height: 100%;
+            border-radius: 3px;
+            background: #6366f1;
+        }
+
+        .state-row .state-time {
+            flex: 0 0 62px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .report-note {
+            margin-top: 10px;
+            font-size: 0.73rem;
+            line-height: 1.5;
+            color: #64748b;
+        }
+
+        .skipped-list {
+            margin: 6px 0 0;
+            padding-left: 16px;
+            font-size: 0.73rem;
+            line-height: 1.55;
+            color: #64748b;
+        }
+
         /* ── Mobile / small-screen layout ─────────────────────────────── */
         @media (max-width: 600px) {
             body {
@@ -1164,6 +1330,7 @@
         <div class="tabs">
             <button type="button" class="tab active" id="tabDownload" onclick="showTab('download')">Download</button>
             <button type="button" class="tab" id="tabFiles" onclick="showTab('files')">Files</button>
+            <button type="button" class="tab" id="tabAnalyse" onclick="showTab('analyse')">Analyse</button>
         </div>
 
         <div class="panel active" id="panelDownload">
@@ -1274,6 +1441,42 @@
             <div class="drive-status" id="filesStatus">No merged logs yet.</div>
         </div>
 
+        <div class="drive-box" id="driveBox">
+            <div class="drive-title">Google Drive sync</div>
+            <div class="drive-actions">
+                <button type="button" id="driveAuthBtn" onclick="toggleGoogleAuth()">Connect Google account</button>
+                <button type="button" id="driveSyncBtn" onclick="syncToDrive()" disabled>Nothing to sync</button>
+            </div>
+            <div class="drive-folder-row">
+                <input id="driveFolderName" spellcheck="false" autocomplete="off" placeholder="Gauge.S Logs" />
+                <button type="button" id="driveFolderBtn" onclick="useDriveFolder()" disabled>Use folder</button>
+            </div>
+            <div class="drive-status" id="driveStatus">Uploads run after each download, once you're back on the internet.</div>
+        </div>
+
+        </div><!-- /panelFiles -->
+
+        <div class="panel" id="panelAnalyse">
+
+        <div class="drive-box visible" id="diagnoseBox">
+            <div class="drive-title">On-device diagnosis</div>
+            <div class="drive-folder-row">
+                <select id="diagnoseLog"></select>
+                <button type="button" id="diagnoseBtn" onclick="runDiagnosis()" disabled>Analyse</button>
+            </div>
+            <div id="diagnoseProgress" style="display:none">
+                <div class="progress-bar-bg thin" style="margin-top:10px">
+                    <div class="progress-bar-fill" id="diagnoseFill"></div>
+                </div>
+            </div>
+            <div class="drive-status" id="diagnoseStatus">Pick a merged log and tap Analyse. Nothing is uploaded — the whole diagnosis runs on this device.</div>
+            <div id="diagnoseReport"></div>
+            <div class="drive-actions" id="diagnoseActions" style="display:none">
+                <button type="button" id="diagnoseCopyBtn" onclick="copyDiagnosis()">Copy report</button>
+                <button type="button" id="diagnoseShareBtn" onclick="shareDiagnosis()">Share report</button>
+            </div>
+        </div>
+
         <div class="drive-box" id="analyseBox">
             <div class="drive-title">Vehicle &amp; AI analysis</div>
             <div class="vehicle-grid">
@@ -1294,20 +1497,7 @@
             <div class="drive-status" id="analyseStatus">Fill in the car details, pick a log, then Share to send it to Gemini with the CSV attached.</div>
         </div>
 
-        <div class="drive-box" id="driveBox">
-            <div class="drive-title">Google Drive sync</div>
-            <div class="drive-actions">
-                <button type="button" id="driveAuthBtn" onclick="toggleGoogleAuth()">Connect Google account</button>
-                <button type="button" id="driveSyncBtn" onclick="syncToDrive()" disabled>Nothing to sync</button>
-            </div>
-            <div class="drive-folder-row">
-                <input id="driveFolderName" spellcheck="false" autocomplete="off" placeholder="Gauge.S Logs" />
-                <button type="button" id="driveFolderBtn" onclick="useDriveFolder()" disabled>Use folder</button>
-            </div>
-            <div class="drive-status" id="driveStatus">Uploads run after each download, once you're back on the internet.</div>
-        </div>
-
-        </div><!-- /panelFiles -->
+        </div><!-- /panelAnalyse -->
 
         <div class="footer">
             <span class="offline-badge" id="offlineBadge">offline — device requests unavailable</span>
@@ -1316,9 +1506,14 @@
         </div>
     </div>
 
+    <!-- The diagnostic pipeline. A separate file because the analysis Worker
+         loads it too, and because it is a self-contained library rather than
+         app glue. -->
+    <script src="analyzer.js"></script>
+
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.20.0';
+        const APP_VERSION = '1.21.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -2119,6 +2314,7 @@
                 analyseStatus(`Could not list Drive: ${err.message || err}`, 'warn');
             }
             renderAnalyse();
+            renderDiagnose();
         }
 
         /** Records a file we just put in Drive, so the UI reflects it at once. */
@@ -2310,6 +2506,309 @@
             if (none) analyseStatus('Run a download first, or pull your uploaded logs from Drive.');
         }
 
+        // ── On-device diagnosis ──────────────────────────────────────────
+        // The whole diagnostic pipeline lives in analyzer.js: ingest, condition,
+        // segment, aggregate, detect, rank. It is the Car Doctor engine, ported
+        // from Kotlin so the same analysis runs in the web app and the native
+        // app alike. Nothing here talks to the network — a drive log never
+        // leaves the device.
+        let diagnosisReport = null;   // the last plain report, for copy/share
+        let diagnosisRunning = false;
+
+        function diagnoseStatus(message, kind = 'info') {
+            const el = document.getElementById('diagnoseStatus');
+            if (!el) return;
+            const colors = { info: '#64748b', success: '#34d399', warn: '#fbbf24', error: '#f87171' };
+            el.style.color = colors[kind] || colors.info;
+            el.textContent = message;
+        }
+
+        /**
+         * Runs the pipeline, off the UI thread where the browser allows it.
+         *
+         * A large merged log takes a couple of seconds, which is long enough to
+         * freeze the interface and stall its own progress bar. Where a Worker
+         * cannot be constructed the same code runs inline instead, so analysis
+         * always works and only smoothness is lost.
+         */
+        function analyseInBackground(text, onProgress) {
+            return new Promise((resolve, reject) => {
+                let worker;
+                try {
+                    worker = new Worker('analyzer-worker.js');
+                } catch (err) {
+                    console.warn('[diagnose] worker unavailable, running inline:', err);
+                    worker = null;
+                }
+
+                if (!worker) {
+                    // Yield once so the "Analysing…" state actually paints
+                    // before the main thread is taken for the run.
+                    setTimeout(() => {
+                        try {
+                            resolve(CarDoctor.toPlainReport(CarDoctor.analyze(text, { onProgress })));
+                        } catch (err) {
+                            reject(err);
+                        }
+                    }, 50);
+                    return;
+                }
+
+                worker.onmessage = event => {
+                    const message = event.data;
+                    if (message.type === 'progress') {
+                        onProgress(message.value);
+                    } else if (message.type === 'done') {
+                        worker.terminate();
+                        resolve(message.report);
+                    } else {
+                        worker.terminate();
+                        reject(new Error(message.message || 'analysis failed'));
+                    }
+                };
+                worker.onerror = err => {
+                    worker.terminate();
+                    reject(new Error(err.message || 'analysis worker failed'));
+                };
+                worker.postMessage({ text });
+            });
+        }
+
+        async function runDiagnosis() {
+            if (diagnosisRunning) return;
+            const select = document.getElementById('diagnoseLog');
+            const name = select && select.value;
+            if (!name) {
+                diagnoseStatus('No log selected — run a download first.', 'warn');
+                return;
+            }
+
+            const button = document.getElementById('diagnoseBtn');
+            const progress = document.getElementById('diagnoseProgress');
+            const fill = document.getElementById('diagnoseFill');
+            diagnosisRunning = true;
+            button.disabled = true;
+            document.getElementById('diagnoseReport').innerHTML = '';
+            document.getElementById('diagnoseActions').style.display = 'none';
+            diagnoseStatus(`Reading ${name}…`);
+
+            try {
+                const text = await readLogContent(name);
+                if (!text) {
+                    diagnoseStatus(`${name} is no longer on the phone.`, 'warn');
+                    return;
+                }
+
+                progress.style.display = 'block';
+                fill.style.width = '0%';
+                diagnoseStatus(`Analysing ${name}…`);
+
+                const report = await analyseInBackground(text, fraction => {
+                    fill.style.width = Math.round(fraction * 100) + '%';
+                });
+
+                diagnosisReport = { name, ...report };
+                renderDiagnosis(report);
+
+                const faults = report.groups.length;
+                diagnoseStatus(
+                    faults === 0
+                        ? `No faults matched in ${name}.`
+                        : `${faults} finding(s) in ${name}.`,
+                    faults === 0 ? 'success' : 'warn');
+                document.getElementById('diagnoseActions').style.display = 'flex';
+            } catch (err) {
+                console.warn('[diagnose] failed:', err);
+                diagnoseStatus(`Could not analyse ${name}: ${err.message || err}`, 'error');
+            } finally {
+                progress.style.display = 'none';
+                diagnosisRunning = false;
+                button.disabled = false;
+            }
+        }
+
+        /**
+         * Escapes text destined for innerHTML.
+         *
+         * Most of the report is generated by the pipeline, but the unrecognised
+         * column list comes straight from the log's own header — file content
+         * from the device, which is not ours to trust.
+         */
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+            }[c]));
+        }
+
+        function mmss(seconds) {
+            const s = Math.max(0, Math.round(seconds));
+            return Math.trunc(s / 60) + ':' + String(s % 60).padStart(2, '0');
+        }
+
+        /** Renders one finding, evidence and all. */
+        function findingHtml(f) {
+            const evidence = f.evidence.map(e => {
+                const at = (e.timeMs === null || e.timeMs === undefined)
+                    ? ''
+                    : ` <span class="at-time">@ ${mmss(e.timeMs / 1000)}</span>`;
+                return `<li><strong>${escapeHtml(e.label)}:</strong> ${escapeHtml(e.value)}${at}</li>`;
+            }).join('');
+
+            const checks = f.suggestedChecks.length
+                ? '<div class="finding-section">Suggested checks</div><ul>' +
+                  f.suggestedChecks.map(c => `<li>${escapeHtml(c)}</li>`).join('') + '</ul>'
+                : '';
+
+            return `
+                <div class="finding-head">
+                    <span class="finding-title">${escapeHtml(f.title)}</span>
+                    <span class="badge sev-${f.severity.name}">${escapeHtml(f.severity.label)}</span>
+                </div>
+                <div class="finding-meta">${escapeHtml(f.subSystem)} · ${escapeHtml(f.confidence.label)} · ${escapeHtml(f.detectorId)}</div>
+                <div class="finding-summary">${escapeHtml(f.summary)}</div>
+                <div class="finding-section">Evidence</div>
+                <ul>${evidence}</ul>
+                ${checks}`;
+        }
+
+        function renderDiagnosis(report) {
+            const box = document.getElementById('diagnoseReport');
+            const o = report.overview;
+            const parts = [];
+
+            parts.push(report.groups.length === 0
+                ? '<div class="verdict clean">Nothing matched the rules that could be run</div>'
+                : `<div class="verdict faults">${report.groups.length} finding(s), worst first</div>`);
+
+            // Findings are already ranked worst-first, and grouped by cause so
+            // one fault reads as one diagnosis rather than three repairs.
+            for (const group of report.groups) {
+                const related = group.related.length
+                    ? '<div class="finding-section">Also consistent with this cause</div><ul>' +
+                      group.related.map(r =>
+                          `<li><strong>${escapeHtml(r.title)}</strong> (${escapeHtml(r.detectorId)})</li>`).join('') +
+                      '</ul>'
+                    : '';
+                parts.push(
+                    `<div class="finding sev-${group.primary.severity.name}">` +
+                    findingHtml(group.primary) + related + '</div>');
+            }
+
+            // What the log covered, so a reader can judge what the findings are
+            // worth: every detector only ever sees its own operating states.
+            const states = o.stateBreakdown
+                .filter(e => e.seconds >= 0.5)
+                .map(e => {
+                    const pct = o.durationSeconds > 0 ? (e.seconds / o.durationSeconds) * 100 : 0;
+                    return `<div class="state-row">
+                        <span class="state-name">${escapeHtml(e.label)}</span>
+                        <span class="state-bar"><span style="width:${pct.toFixed(1)}%"></span></span>
+                        <span class="state-time">${mmss(e.seconds)}</span>
+                    </div>`;
+                }).join('');
+
+            parts.push(`
+                <div class="finding sev-INFO">
+                    <div class="finding-head"><span class="finding-title">What the log covered</span></div>
+                    <div class="finding-meta">
+                        ${mmss(o.durationSeconds)} long · ${(o.runningSeconds / 60).toFixed(1)} min running ·
+                        ${o.rowsRead.toLocaleString()} rows · ${o.samplesAnalyzed.toLocaleString()} analysed ·
+                        ${o.channelsRecognized} channels
+                    </div>
+                    <div class="finding-section">Time in each operating state</div>
+                    ${states}
+                    ${o.unusableChannels.length
+                        ? '<div class="finding-section">Unusable channels</div><ul><li>' +
+                          o.unusableChannels.map(c => escapeHtml(c.displayName)).join(', ') + '</li></ul>'
+                        : ''}
+                    ${o.unmappedColumns.length
+                        ? '<div class="finding-section">Unrecognised columns</div><ul><li>' +
+                          o.unmappedColumns.map(escapeHtml).join(', ') + '</li></ul>'
+                        : ''}
+                </div>`);
+
+            if (report.skipped.length) {
+                parts.push(`
+                    <div class="finding sev-INFO">
+                        <div class="finding-head">
+                            <span class="finding-title">Not checked (${report.skipped.length})</span>
+                        </div>
+                        <div class="report-note">
+                            These are absences of evidence, not clean bills of health. A quiet report
+                            means nothing matched the rules that could be run — log the missing
+                            channels and more can be checked.
+                        </div>
+                        <ul class="skipped-list">
+                            ${report.skipped.map(sk =>
+                                `<li><strong>${escapeHtml(sk.title)}</strong> — ${escapeHtml(sk.reason)}</li>`).join('')}
+                        </ul>
+                    </div>`);
+            }
+
+            box.innerHTML = parts.join('');
+        }
+
+        async function copyDiagnosis() {
+            if (!diagnosisReport) return;
+            const Clipboard = nativePlugin('Clipboard');
+            try {
+                if (Clipboard) await Clipboard.write({ string: diagnosisReport.text });
+                else await navigator.clipboard.writeText(diagnosisReport.text);
+                diagnoseStatus('Report copied.', 'success');
+            } catch (err) {
+                console.warn('[diagnose] clipboard failed:', err);
+                // Last resort: show it so it can be selected by hand.
+                const box = document.getElementById('promptFallback');
+                box.value = diagnosisReport.text;
+                box.style.display = 'block';
+                diagnoseStatus('Could not reach the clipboard — the report is in the box below.', 'warn');
+            }
+        }
+
+        async function shareDiagnosis() {
+            if (!diagnosisReport) return;
+            const title = `Engine diagnosis — ${diagnosisReport.name}`;
+            const Share = nativePlugin('Share');
+            if (Share) {
+                try {
+                    await Share.share({ title, text: diagnosisReport.text, dialogTitle: 'Share diagnosis' });
+                } catch (err) {
+                    console.warn('[diagnose] share cancelled or failed:', err);
+                }
+                return;
+            }
+            if (navigator.share) {
+                try {
+                    await navigator.share({ title, text: diagnosisReport.text });
+                } catch (err) {
+                    console.warn('[diagnose] share cancelled or failed:', err);
+                }
+                return;
+            }
+            copyDiagnosis();
+        }
+
+        function renderDiagnose() {
+            const select = document.getElementById('diagnoseLog');
+            if (!select) return;
+            const previous = select.value;
+            const logs = availableLogs();
+            const WHERE = { session: 'this run', phone: 'on phone', drive: 'Drive' };
+            select.innerHTML = '';
+            for (const l of logs) {
+                const option = document.createElement('option');
+                option.value = l.name;
+                option.textContent = `${l.name} (${WHERE[l.source] || 'unknown'})`;
+                select.appendChild(option);
+            }
+            if (previous && logs.some(l => l.name === previous)) select.value = previous;
+
+            const none = logs.length === 0;
+            select.disabled = none;
+            document.getElementById('diagnoseBtn').disabled = none || diagnosisRunning;
+            if (none) diagnoseStatus('Run a download first — then the log can be analysed here.');
+        }
+
         // ── File manager ─────────────────────────────────────────────────
         function filesStatus(message, kind = 'info') {
             const el = document.getElementById('filesStatus');
@@ -2398,6 +2897,7 @@
             }
             renderFiles();
             renderAnalyse();
+            renderDiagnose();
             filesStatus('List refreshed.', 'success');
         }
 
@@ -2481,6 +2981,7 @@
 
             renderFiles();
             renderAnalyse();
+            renderDiagnose();
             renderDrive();
 
             if (problems.length) {
@@ -3198,6 +3699,7 @@
 
             renderDrive();
             renderAnalyse();
+            renderDiagnose();
             renderFiles();
 
             if (mode === 'sync' && pendingUploads.length) {
@@ -3287,6 +3789,7 @@
         async function initNative() {
             renderDrive();
             renderAnalyse();
+            renderDiagnose();
             renderFiles();
 
             // Android hands requests to mobile data when the Gauge.S Wi-Fi has
@@ -3305,15 +3808,21 @@
         }
 
         function showTab(which) {
-            const isFiles = which === 'files';
-            document.getElementById('panelDownload').classList.toggle('active', !isFiles);
-            document.getElementById('panelFiles').classList.toggle('active', isFiles);
-            document.getElementById('tabDownload').classList.toggle('active', !isFiles);
-            document.getElementById('tabFiles').classList.toggle('active', isFiles);
-            if (isFiles) {
+            for (const [name, panel, tab] of [
+                ['download', 'panelDownload', 'tabDownload'],
+                ['files', 'panelFiles', 'tabFiles'],
+                ['analyse', 'panelAnalyse', 'tabAnalyse'],
+            ]) {
+                const on = which === name;
+                document.getElementById(panel).classList.toggle('active', on);
+                document.getElementById(tab).classList.toggle('active', on);
+            }
+            if (which === 'files') {
                 renderFiles();
-                renderAnalyse();
                 renderDrive();
+            } else if (which === 'analyse') {
+                renderDiagnose();
+                renderAnalyse();
             }
         }
 
