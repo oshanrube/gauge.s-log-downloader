@@ -49,4 +49,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+    <!-- Required by KeepAwakePlugin to hold the CPU awake mid-download -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 </manifest>
