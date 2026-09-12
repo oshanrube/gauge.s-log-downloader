@@ -2857,6 +2857,14 @@
             // A frozen feed can only be recognised after it has been frozen for
             // a while, so pass 1 maps the stale stretches and pass 2 drops them.
             // Two passes already exist for the spark map; this rides along.
+            //
+            // Pass 1 therefore still learns from the frozen samples, which is
+            // benign rather than merely tolerable: a frozen value is a repeat of
+            // the last genuine reading, so it lands in the cell that reading
+            // already belonged to and pulls a median toward a value that was
+            // already typical there. Freezing 90 s inside a hard pull - the worst
+            // case, since that cell is one the knock rule actually consults -
+            // moves the learned baseline by 0.004 degrees.
             const tracker = calibration ? null : new StaleFeedTracker();
             const spans = calibration ? calibration.staleSpans : [];
             const isStale = staleFilter(spans);
