@@ -2642,7 +2642,9 @@
         }
 
         function mmss(seconds) {
-            const s = Math.max(0, Math.round(seconds));
+            // Truncate, matching the analyser's own clock formatting — rounding
+            // here made the same instant render a second later than the report.
+            const s = Math.max(0, Math.trunc(seconds));
             return Math.trunc(s / 60) + ':' + String(s % 60).padStart(2, '0');
         }
 
@@ -2718,6 +2720,12 @@
                     </div>
                     <div class="finding-section">Time in each operating state</div>
                     ${states}
+                    ${o.staleSeconds > 0
+                        ? '<div class="finding-section">Frozen data excluded</div><ul><li>' +
+                          `${o.staleSeconds.toFixed(1)}s in ${o.staleSpanCount} stretch(es) — the logger was ` +
+                          'repeating stale values, so those moments were left out rather than read as driving' +
+                          '</li></ul>'
+                        : ''}
                     ${o.unusableChannels.length
                         ? '<div class="finding-section">Unusable channels</div><ul><li>' +
                           o.unusableChannels.map(c => escapeHtml(c.displayName)).join(', ') + '</li></ul>'

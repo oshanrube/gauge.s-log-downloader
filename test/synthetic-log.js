@@ -95,6 +95,23 @@ class SyntheticLog {
         return this;
     }
 
+    /**
+     * Repeats the last row verbatim, only the clock advancing.
+     *
+     * What a logger writes when the ECU stops answering: the connection drops or
+     * the engine is switched off, and it keeps emitting the values it last
+     * received rather than emitting nothing.
+     */
+    frozen(seconds) {
+        const last = this.rows[this.rows.length - 1].split(',');
+        const samples = Math.trunc(seconds * 1000 / this.intervalMs);
+        for (let i = 0; i < samples; i++) {
+            this.timeMs += this.intervalMs;
+            this.rows.push([this.timeMs, ...last.slice(1)].join(','));
+        }
+        return this;
+    }
+
     /** A complete, healthy drive: cold start, warm-up, idle, cruise and a pull. */
     healthyDrive() {
         return this

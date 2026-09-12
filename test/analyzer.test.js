@@ -389,3 +389,63 @@ test('a drive with no engine speed variety produces no cam verdict either way', 
         .phase({ seconds: 600, rpm: 820, load: 95, tps: 0, speed: 0, coolant: 92, camAdvance: 20 }));
     assert.ok(!has(report, 'ignition.cam_stuck'));
 });
+
+// ── Frozen feeds ─────────────────────────────────────────────────────────
+
+test('a frozen feed is excluded rather than read as steady driving', () => {
+    // Regression test for a real false positive. On the reference log the engine
+    // is switched off 35 s before the end; the ECU stops answering and the logger
+    // repeats its last values, while the analog input correctly records the
+    // battery falling to 12.4 V with the alternator stopped. Those frozen samples
+    // were classified as steady cruise, and the voltage reading below them was
+    // reported as a 35-second charging fault on a car that was simply parked.
+    const drive = () => new SyntheticLog()
+        .phase({ seconds: 700, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, volts: 13.8 });
+
+    const clean = analyze(drive().build());
+    assert.strictEqual(clean.overview.staleSeconds, 0, 'normal driving must never look frozen');
+
+    // Same drive, then the feed freezes with the voltage channel reading low.
+    const withTail = drive();
+    withTail.phase({ seconds: 1, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, volts: 12.3 });
+    withTail.frozen(40);
+    const report = analyze(withTail.build());
+
+    assert.ok(report.overview.staleSeconds > 35,
+        `expected the frozen stretch to be excluded, got ${report.overview.staleSeconds}s`);
+    assert.strictEqual(report.overview.staleSpanCount, 1);
+    assert.ok(!has(report, 'electrical.charging'),
+        'a parked car with a frozen feed is not a charging fault');
+});
+
+test('a short repeat is not mistaken for a frozen feed', () => {
+    // Loggers legitimately repeat a value when a channel updates more slowly
+    // than the log rate, so only a sustained freeze counts.
+    const log = new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92 });
+    log.frozen(1);
+    log.phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92 });
+
+    assert.strictEqual(analyze(log.build()).overview.staleSeconds, 0);
+});
+
+// ── Evidence formatting ──────────────────────────────────────────────────
+
+test('evidence never prints its own timestamp twice', () => {
+    // The value carries the measurement and timeMs carries the when; the
+    // renderer places the time. A value that also spells out a clock time gets
+    // rendered twice, and by two functions that rounded differently.
+    const log = new SyntheticLog()
+        .phase({ seconds: 600, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, volts: 13.8 })
+        .phase({ seconds: 40, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, volts: 12.3 })
+        .phase({ seconds: 300, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, volts: 13.8 });
+
+    const report = analyze(log.build());
+    for (const f of report.groups.flatMap(g => g.all)) {
+        for (const e of f.evidence) {
+            if (e.timeMs === null || e.timeMs === undefined) continue;
+            assert.ok(!/\d+:\d\d/.test(e.value),
+                `${f.detectorId} / ${e.label}: value "${e.value}" repeats the timestamp it already carries`);
+        }
+    }
+});
