@@ -232,6 +232,13 @@
         idleRpmStdevMax: 60,
 
         // --- Analysis resolution ---
+        /**
+         * Outside air temperature, when something actually knows it - a weather
+         * lookup for where and when the drive happened. Null means infer it from
+         * the log, which is a proxy rather than a measurement.
+         */
+        ambientC: null,
+
         resampleHz: 5,
         /** Minimum seconds a condition must hold before it can be reported at all. */
         minEvidenceSeconds: 20,
@@ -596,6 +603,65 @@
             return health;
         }
     }
+
+    /**
+     * The lowest level a signal actually *held*, as opposed to the lowest value
+     * it ever momentarily read.
+     *
+     * Keeps a sliding-window maximum and tracks the smallest one seen. A single
+     * dropped sample can never be the maximum of a window, so it can never set
+     * the answer - which a plain minimum does, and did: on the reference log the
+     * intake sensor dithers between 27.75 and 34.50 while the car sits
+     * stationary with a 72 degC engine, then reads 13.50 for exactly one sample
+     * and returns to 34.50. That one reading was being used as the outside air
+     * temperature, inflating the measured intake rise by nearly 20 degC.
+     *
+     * The deque holds only entries that could still win, so memory is bounded by
+     * the window rather than the length of the drive.
+     */
+    class SustainedMinTracker {
+        constructor(spanMs) {
+            this.spanMs = spanMs;
+            this.deque = [];
+            this.windowStartMs = null;
+            this.best = NaN;
+        }
+
+        /** Ends the current window. Called across gaps, which must not be spanned. */
+        reset() {
+            this.deque.length = 0;
+            this.windowStartMs = null;
+        }
+
+        observe(timeMs, value) {
+            if (Number.isNaN(value)) return;
+            if (this.windowStartMs === null) this.windowStartMs = timeMs;
+
+            // Anything no larger than the new value can never be a later
+            // window's maximum, so it is dropped rather than carried.
+            while (this.deque.length && this.deque[this.deque.length - 1].v <= value) this.deque.pop();
+            this.deque.push({ t: timeMs, v: value });
+            while (this.deque.length && timeMs - this.deque[0].t > this.spanMs) this.deque.shift();
+
+            // Only judge once a full window has actually been observed,
+            // otherwise the start of a log reports a window of one sample.
+            if (timeMs - this.windowStartMs < this.spanMs) return;
+            const windowMax = this.deque[0].v;
+            if (Number.isNaN(this.best) || windowMax < this.best) this.best = windowMax;
+        }
+
+        /** NaN when no complete window was ever observed - too short to judge. */
+        get value() { return this.best; }
+    }
+
+    /**
+     * How long the intake has to hold a temperature for it to count as ambient.
+     *
+     * Not load-bearing: on the reference log the answer moves from 31.5 to
+     * 33.8 degC across windows from 2 s to 30 s, against 13.5 degC for the
+     * single-sample minimum it replaces.
+     */
+    const AMBIENT_WINDOW_SECONDS = 10;
 
     /**
      * Channels that genuinely move from one raw sample to the next while an
@@ -1294,6 +1360,7 @@
             this.warmReachedMs = null;
             this.knockRun = 0;
             this.minRunningTps = NaN;
+            this.ambientTracker = new SustainedMinTracker(AMBIENT_WINDOW_SECONDS * 1000);
         }
 
         accept(analyzed) {
@@ -1367,6 +1434,12 @@
         trackTimeline(analyzed) {
             const coolant = analyzed.sample.get(CH.COOLANT_TEMP);
             const oil = analyzed.sample.get(CH.OIL_TEMP);
+
+            // Outside air, inferred from the coolest the intake ever settles at.
+            // A gap means the far side is a different stretch of driving, so the
+            // window restarts rather than spanning it.
+            if (analyzed.discontinuity) this.ambientTracker.reset();
+            this.ambientTracker.observe(analyzed.timeMs, analyzed.sample.get(CH.INTAKE_AIR_TEMP));
             if (analyzed.state !== ST.ENGINE_OFF && this.runningStartMs === null) {
                 this.runningStartMs = analyzed.timeMs;
                 if (!Number.isNaN(coolant)) this.startCoolant = coolant;
@@ -1485,6 +1558,7 @@
                 peakOilC: this.peakOil,
                 secondsToWarm,
                 hasColdStart: (this.startCoolant === null ? Infinity : this.startCoolant) < this.profile.warmCoolantC,
+                ambientEstimateC: this.ambientTracker.value,
             };
 
             return new DriveSummary({
@@ -2461,10 +2535,16 @@
             const cruise = ctx.across(CH.INTAKE_AIR_TEMP, [ST.CRUISE_STEADY]);
             if (!cruise || cruise.count < MIN_CELL_SAMPLES) return null;
 
-            const health = summary.channelHealth.get(CH.INTAKE_AIR_TEMP);
-            if (!health) return null;
-            const ambientProxy = health.min;
-            const rise = cruise.mean - ambientProxy;
+            // A real measurement when one is available, an inference otherwise -
+            // and the report says which, because the difference matters to
+            // anyone deciding whether to act on it.
+            const supplied = summary.profile.ambientC;
+            const measured = (supplied !== null && supplied !== undefined && !Number.isNaN(supplied));
+            const ambient = measured ? supplied : summary.timeline.ambientEstimateC;
+            // Too short to have held any temperature long enough to judge.
+            if (ambient === null || ambient === undefined || Number.isNaN(ambient)) return null;
+
+            const rise = cruise.mean - ambient;
             if (rise < HEATSOAK_RISE_C) return null;
 
             return {
@@ -2474,14 +2554,20 @@
                 severity: SEVERITY.LOW,
                 confidence: CONFIDENCE.LOW,
                 summary: 'Intake air averaged ' + ctx.fmt(cruise.mean, 1) + ' degC while cruising, ' +
-                    ctx.fmt(rise, 1) + ' degC above the coldest reading in the log (' +
-                    ctx.fmt(ambientProxy, 1) + ' degC, used as an ambient estimate). Hot intake air costs power ' +
-                    'and makes the engine more knock-prone, so it is worth ruling out before chasing ignition ' +
-                    'faults.',
+                    ctx.fmt(rise, 1) + ' degC above ' +
+                    (measured
+                        ? 'the outside air temperature (' + ctx.fmt(ambient, 1) + ' degC). '
+                        : 'the coolest the intake ever settled at (' + ctx.fmt(ambient, 1) +
+                          ' degC, standing in for outside air). ') +
+                    'Hot intake air costs power and makes the engine more knock-prone, so it is worth ruling ' +
+                    'out before chasing ignition faults.',
                 evidence: [
                     evidence('Mean intake air, cruising', ctx.fmt(cruise.mean, 1) + ' degC'),
                     evidence('Peak intake air', ctx.fmt(cruise.max, 1) + ' degC'),
-                    evidence('Assumed ambient', ctx.fmt(ambientProxy, 1) + ' degC (coldest reading in log)'),
+                    measured
+                        ? evidence('Outside air', ctx.fmt(ambient, 1) + ' degC (from the vehicle profile)')
+                        : evidence('Assumed ambient', ctx.fmt(ambient, 1) + ' degC (lowest intake temperature ' +
+                            'held for ' + AMBIENT_WINDOW_SECONDS + 's or more)'),
                 ],
                 suggestedChecks: [
                     'Check for hot air being drawn from the engine bay rather than outside',
@@ -2976,7 +3062,7 @@
         DEFAULT_PROFILE, makeProfile, resampleIntervalMs,
         Sample, emptyValues, Resampler, ChannelHealthTracker, StateSegmenter,
         Accum, mergeAccums, ChannelStats, SparkMap, EventCollector, SummaryBuilder,
-        StaleFeedTracker, staleFilter, staleSeconds,
+        StaleFeedTracker, staleFilter, staleSeconds, SustainedMinTracker,
         DetectorContext, BUILT_IN_DETECTORS, runDetectors, rankReport,
         readCsv, resolveChannel, aliasRank, normalizeHeader,
         rpmBinOf, loadBinOf,

@@ -486,3 +486,70 @@ test('a mid-file freeze is not bridged into invented driving', () => {
     assert.ok(unaccounted > 40,
         `the frozen stretch must be left out of the state breakdown, only ${unaccounted.toFixed(1)}s was`);
 });
+
+// ── Ambient temperature ──────────────────────────────────────────────────
+
+test('a single dropped reading cannot set the ambient estimate', () => {
+    // The reference log's intake sensor dithers around 34 degC while the car
+    // sits still with a hot engine, then reads 13.5 for exactly one sample. A
+    // plain minimum took that reading as the outside air temperature.
+    const tracker = new CarDoctor.SustainedMinTracker(10_000);
+    for (let i = 0; i < 300; i++) {
+        // 5 Hz, steady at 30 degC, with one dropout a third of the way in.
+        tracker.observe(i * 200, i === 100 ? 5 : 30);
+    }
+    assert.strictEqual(tracker.value, 30, 'a one-sample dropout must not win');
+});
+
+test('the ambient estimate tracks a genuinely sustained low', () => {
+    const tracker = new CarDoctor.SustainedMinTracker(10_000);
+    for (let i = 0; i < 150; i++) tracker.observe(i * 200, 40);
+    // 30 s held at 18 degC is a real reading, not a glitch.
+    for (let i = 150; i < 300; i++) tracker.observe(i * 200, 18);
+    assert.strictEqual(tracker.value, 18);
+});
+
+test('a window is never spanned across a gap', () => {
+    const tracker = new CarDoctor.SustainedMinTracker(10_000);
+    for (let i = 0; i < 100; i++) tracker.observe(i * 200, 40);
+    tracker.reset();
+    // Only 2 s on the far side of the gap: too short to conclude anything.
+    for (let i = 0; i < 10; i++) tracker.observe(600_000 + i * 200, 5);
+    assert.strictEqual(tracker.value, 40, 'the short stretch after a gap must not count');
+});
+
+test('heat soak prefers a supplied outside air temperature over its own guess', () => {
+    // Intake sitting at 55 degC. Whether that is a fault depends entirely on
+    // how hot it is outside, which the log cannot know and a weather lookup can.
+    const log = () => new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, iat: 55 })
+        .build();
+
+    const cold = analyze(log(), { profile: CarDoctor.makeProfile({ ambientC: 10 }) });
+    const hot = analyze(log(), { profile: CarDoctor.makeProfile({ ambientC: 45 }) });
+
+    assert.ok(has(cold, 'air.intake_heatsoak'), '55 degC intake on a 10 degC day is heat soak');
+    assert.ok(!has(hot, 'air.intake_heatsoak'), '55 degC intake on a 45 degC day is just a hot day');
+
+    const f = finding(cold, 'air.intake_heatsoak');
+    assert.ok(f.evidence.some(e => e.label === 'Outside air'),
+        'the report must say the figure was measured, not inferred');
+});
+
+test('a dropped intake reading does not invent a heat soak finding', () => {
+    // End to end: the same defect the reference log carries.
+    const rows = new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, iat: 40 })
+        .build()
+        .split('\n');
+    // Intake air temp is column 8. Drop exactly one sample to 5 degC.
+    const cells = rows[600].split(',');
+    cells[8] = '5.00';
+    rows[600] = cells.join(',');
+
+    const report = analyze(rows.join('\n'));
+    assert.ok(!has(report, 'air.intake_heatsoak'),
+        'one bad sample must not become the outside air temperature');
+    assert.ok(report.summary.timeline.ambientEstimateC > 30,
+        `ambient should track the real level, got ${report.summary.timeline.ambientEstimateC}`);
+});
