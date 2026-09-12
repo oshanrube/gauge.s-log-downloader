@@ -32,11 +32,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Cached because every dependency was being fetched from Google and Maven
+      # on every run, and a merge that cannot reach them is now a release that
+      # silently never happens rather than a dispatch to retry. npm was already
+      # cached; Gradle was the one left exposed.
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
+          cache: gradle
 
       - name: Set up Node
         uses: actions/setup-node@v4
