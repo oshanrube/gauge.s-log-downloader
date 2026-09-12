@@ -437,6 +437,11 @@
             gap: 8px;
         }
 
+        /* An odd number of fields would leave the last one stranded half-width. */
+        .vehicle-grid input:last-child {
+            grid-column: 1 / -1;
+        }
+
         .vehicle-grid input {
             min-width: 0;
             padding: 9px 10px;
@@ -1484,6 +1489,7 @@
                 <input id="veh_engine" spellcheck="false" autocomplete="off" placeholder="Engine (e.g. M54B30)" />
                 <input id="veh_ecu" spellcheck="false" autocomplete="off" placeholder="ECU (e.g. MS43)" />
                 <input id="veh_location" spellcheck="false" autocomplete="off" placeholder="Location (town, country)" />
+                <input id="veh_ambient" spellcheck="false" autocomplete="off" inputmode="decimal" placeholder="Outside air °C on the drive (optional)" />
             </div>
             <div class="drive-folder-row">
                 <select id="analyseLog"></select>
@@ -1513,7 +1519,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.24.0';
+        const APP_VERSION = '1.26.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -2476,8 +2482,10 @@
         function renderAnalyse() {
             const section = document.getElementById('analyseBox');
             if (!section) return;
-            section.classList.toggle('visible', IS_NATIVE);
-            if (!IS_NATIVE) return;
+            // Always shown: these details feed the on-device diagnosis, which
+            // works in the browser as well. Only handing the log to another app
+            // needs the native share sheet.
+            section.classList.add('visible');
 
             const vehicle = loadVehicle();
             for (const f of VEHICLE_FIELDS) {
@@ -2501,10 +2509,14 @@
             const none = logs.length === 0;
             select.disabled = none;
             document.getElementById('analyseCopyBtn').disabled = none;
-            document.getElementById('analyseShareBtn').disabled = none;
+            document.getElementById('analyseShareBtn').disabled = none || !IS_NATIVE;
             document.getElementById('analyseRefreshBtn').disabled =
                 !driveState.token || !driveState.folder;
             if (none) analyseStatus('Run a download first, or pull your uploaded logs from Drive.');
+            else if (!IS_NATIVE) {
+                analyseStatus('Car details feed the diagnosis above. Copy the prompt to take a log ' +
+                    'to an AI as well — attaching the file needs the app.');
+            }
         }
 
         // ── On-device diagnosis ──────────────────────────────────────────
@@ -2532,7 +2544,7 @@
          * cannot be constructed the same code runs inline instead, so analysis
          * always works and only smoothness is lost.
          */
-        function analyseInBackground(text, onProgress) {
+        function analyseInBackground(text, profile, onProgress) {
             return new Promise((resolve, reject) => {
                 let worker;
                 try {
@@ -2547,7 +2559,7 @@
                     // before the main thread is taken for the run.
                     setTimeout(() => {
                         try {
-                            resolve(CarDoctor.toPlainReport(CarDoctor.analyze(text, { onProgress })));
+                            resolve(CarDoctor.toPlainReport(CarDoctor.analyze(text, { profile, onProgress })));
                         } catch (err) {
                             reject(err);
                         }
@@ -2571,7 +2583,7 @@
                     worker.terminate();
                     reject(new Error(err.message || 'analysis worker failed'));
                 };
-                worker.postMessage({ text });
+                worker.postMessage({ text, profile });
             });
         }
 
@@ -2604,7 +2616,10 @@
                 fill.style.width = '0%';
                 diagnoseStatus(`Analysing ${name}…`);
 
-                const report = await analyseInBackground(text, fraction => {
+                // The same vehicle record the AI hand-off uses, read as numbers
+                // rather than prose.
+                const profile = CarDoctor.profileFromVehicle(saveVehicle());
+                const report = await analyseInBackground(text, profile, fraction => {
                     fill.style.width = Math.round(fraction * 100) + '%';
                 });
 
@@ -3406,7 +3421,7 @@
 
         // ── Vehicle profile ──────────────────────────────────────────────
         const VEHICLE_KEY = 'vehicleProfile';
-        const VEHICLE_FIELDS = ['chassis', 'engine', 'ecu', 'location'];
+        const VEHICLE_FIELDS = ['chassis', 'engine', 'ecu', 'location', 'ambient'];
 
         function loadVehicle() {
             const saved = loadJson(VEHICLE_KEY, {}) || {};
@@ -3453,6 +3468,10 @@
             if (vehicle.location) {
                 lines.push(`The car is driven in ${vehicle.location} — please take the typical climate ` +
                     `there (ambient temperature, humidity, altitude) into account when judging readings.`);
+            }
+            if (vehicle.ambient) {
+                lines.push(`Outside air temperature on this drive was about ${vehicle.ambient} °C — judge ` +
+                    `intake air temperatures against that rather than against a typical day.`);
             }
             lines.push('');
             lines.push('Please read the whole file and analyse it for:');
