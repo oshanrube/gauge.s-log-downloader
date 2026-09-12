@@ -250,6 +250,30 @@
         return Object.assign({}, DEFAULT_PROFILE, overrides || {});
     }
 
+    /**
+     * Turns the app's vehicle record - the same one the AI hand-off describes in
+     * prose - into analysis thresholds.
+     *
+     * One record, two consumers: the model reads it as a sentence, the pipeline
+     * reads it as numbers. Only what the rules can actually act on crosses over.
+     * Free text like chassis or ECU is deliberately not guessed at here: a wrong
+     * threshold is worse than a generic one, and what full load means on this
+     * engine is learned from the drive rather than looked up by name.
+     */
+    function profileFromVehicle(vehicle, base) {
+        const overrides = {};
+        if (vehicle) {
+            const ambient = Number.parseFloat(vehicle.ambient);
+            // A plausible outdoor temperature, not a typo or an empty box.
+            if (Number.isFinite(ambient) && ambient >= -60 && ambient <= 60) {
+                overrides.ambientC = ambient;
+            }
+            const name = [vehicle.chassis, vehicle.engine].filter(Boolean).join(' ').trim();
+            if (name) overrides.name = name;
+        }
+        return Object.assign({}, base || DEFAULT_PROFILE, overrides);
+    }
+
     function resampleIntervalMs(profile) {
         return Math.trunc(1000 / profile.resampleHz);
     }
@@ -429,6 +453,91 @@
     }
 
     const PROGRESS_INTERVAL_ROWS = 2000;
+
+    /**
+     * Reads just the header, so a caller can decide whether a pass is worth
+     * making before paying for one.
+     */
+    function peekHeader(text, assumedIntervalMs = 66) {
+        const end = text.indexOf('\n');
+        const line = (end === -1 ? text : text.slice(0, end)).replace(/\r$/, '');
+        return buildHeader(splitCsv(line).map(c => c.trim()), assumedIntervalMs);
+    }
+
+    /** Full-load evidence thinner than this is not a calibration, it is a guess. */
+    const MIN_WOT_SECONDS = 5;
+    /** The throttle must actually have been swept, or its range means nothing. */
+    const MIN_THROTTLE_SPAN_PCT = 40;
+    /** Outside these, a derived figure is not believable and the default stands. */
+    const MIN_DERIVED_LOAD = 50;
+    const MAX_DERIVED_LOAD = 2500;
+
+    /**
+     * Learns what full load means on this engine, from the drive itself.
+     *
+     * Absolute load in mg/stroke is meaningless across engines - 400 is a hard
+     * pull on a small naturally aspirated four and cruise on a large turbo six -
+     * and the shipped default has to pick one number for all of them. On the
+     * reference car the real figure is about 600, so with the default every
+     * band is mis-scaled: ordinary hard driving is filed as a full-load pull and
+     * the knock rule opens its gate a third of the way too early.
+     *
+     * The evidence is the load reached while the throttle is genuinely open. A
+     * high quantile rather than the maximum, so one spike cannot set the scale -
+     * the same mistake the ambient estimate used to make.
+     *
+     * Deliberately its own pass. The figure scales the load bands, so it has to
+     * be known before anything is binned; deriving it during the pass that
+     * learns the spark map would leave pass 2 looking up cells that pass 1
+     * filled under a different scale. This pass builds no summary and no grid,
+     * so it costs a read rather than an analysis.
+     *
+     * Returns null whenever the drive cannot answer the question, and the
+     * caller keeps the profile's own value.
+     */
+    function calibrateLoadScale(text, profile, onProgress) {
+        const header = peekHeader(text);
+        // Nothing to learn from without both channels; charge nothing to find out.
+        if (![...header.channels].includes(CH.TPS) || ![...header.channels].includes(CH.ENGINE_LOAD)) {
+            return null;
+        }
+
+        const atFullThrottle = new Accum(CH.ENGINE_LOAD);
+        let tpsMin = Infinity;
+        let tpsMax = -Infinity;
+        let rows = 0;
+        let firstTimeMs = null;
+        let lastTimeMs = 0;
+
+        readCsv(text, sample => {
+            const tps = sample.values[CH.TPS.ordinal];
+            const load = sample.values[CH.ENGINE_LOAD.ordinal];
+            rows++;
+            if (firstTimeMs === null) firstTimeMs = sample.timeMs;
+            lastTimeMs = sample.timeMs;
+            if (Number.isNaN(tps)) return;
+            if (tps < tpsMin) tpsMin = tps;
+            if (tps > tpsMax) tpsMax = tps;
+            if (tps >= profile.wotTpsPct && !Number.isNaN(load)) atFullThrottle.add(load);
+        }, { onProgress });
+
+        if (rows < 2 || atFullThrottle.count === 0) return null;
+        if (tpsMax - tpsMin < MIN_THROTTLE_SPAN_PCT) return null;
+
+        const intervalMs = (lastTimeMs - firstTimeMs) / (rows - 1);
+        const evidenceSeconds = atFullThrottle.count * intervalMs / 1000;
+        if (evidenceSeconds < MIN_WOT_SECONDS) return null;
+
+        const fullLoad = atFullThrottle.quantile(0.95);
+        if (Number.isNaN(fullLoad) || fullLoad < MIN_DERIVED_LOAD || fullLoad > MAX_DERIVED_LOAD) return null;
+
+        return {
+            highLoadThreshold: fullLoad,
+            evidenceSeconds,
+            peakLoad: atFullThrottle.max,
+            throttleSpanPct: tpsMax - tpsMin,
+        };
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // 2. Condition
@@ -2802,6 +2911,9 @@
                 .map(h => h.channel),
             staleSeconds: staleSeconds(summary.staleSpans || []),
             staleSpanCount: (summary.staleSpans || []).length,
+            highLoadThreshold: summary.profile.highLoadThreshold,
+            loadScaleCalibrated: !!summary.loadScale,
+            loadScaleEvidenceSeconds: summary.loadScale ? summary.loadScale.evidenceSeconds : 0,
         };
 
         return {
@@ -2856,6 +2968,10 @@
         if (o.unusableChannels.length) {
             lines.push('Unusable channels : ' + o.unusableChannels.map(c => c.displayName).join(', '));
         }
+        lines.push('Full load         : ' + o.highLoadThreshold.toFixed(0) + ' mg/str ' +
+            (o.loadScaleCalibrated
+                ? '(learned from this drive, ' + o.loadScaleEvidenceSeconds.toFixed(0) + 's at full throttle)'
+                : '(generic - no full-throttle driving in this log to learn from)'));
         if (o.staleSeconds > 0) {
             lines.push('Frozen feed       : ' + o.staleSeconds.toFixed(1) + 's excluded in ' +
                 o.staleSpanCount + ' stretch(es) - the logger was repeating stale values');
@@ -2930,9 +3046,18 @@
      */
     function analyze(text, options) {
         const opts = options || {};
-        const profile = opts.profile || DEFAULT_PROFILE;
+        const supplied = opts.profile || DEFAULT_PROFILE;
         const detectors = opts.detectors || BUILT_IN_DETECTORS;
         const onProgress = opts.onProgress || null;
+
+        // Learn this engine's scale before anything is binned against it. Opt
+        // out with calibrate:false to analyse against the profile as given.
+        const loadScale = opts.calibrate === false
+            ? null
+            : calibrateLoadScale(text, supplied, onProgress ? f => onProgress(f / 3) : null);
+        const profile = loadScale
+            ? Object.assign({}, supplied, { highLoadThreshold: loadScale.highLoadThreshold })
+            : supplied;
 
         const runPass = (calibration, scale) => {
             const health = new ChannelHealthTracker();
@@ -2987,14 +3112,15 @@
         // Pass 1: learn the ignition baseline and the closed-throttle reference.
         // Neither can be known before the whole log has been read, so no
         // knock-retard events are produced here.
-        const pass1 = runPass(null, f => f * 0.5);
+        const pass1 = runPass(null, f => 1 / 3 + f / 3);
 
         // Pass 2: same arithmetic, now able to judge timing against the
         // engine's own map and to recognise a closed throttle on a vehicle
         // whose sensor does not rest at zero.
-        const pass2 = runPass(pass1.calibration, f => 0.5 + f * 0.5);
+        const pass2 = runPass(pass1.calibration, f => 2 / 3 + f / 3);
         if (onProgress) onProgress(1);
 
+        pass2.summary.loadScale = loadScale;
         return rankReport(runDetectors(pass2.summary, detectors));
     }
 
@@ -3038,6 +3164,9 @@
                 })),
                 staleSeconds: o.staleSeconds,
                 staleSpanCount: o.staleSpanCount,
+                highLoadThreshold: o.highLoadThreshold,
+                loadScaleCalibrated: o.loadScaleCalibrated,
+                loadScaleEvidenceSeconds: o.loadScaleEvidenceSeconds,
             },
             groups: report.groups.map(g => ({
                 primary: plainFinding(g.primary),
@@ -3059,10 +3188,11 @@
         CHANNELS, CH, STATES, ST, LOAD_BINS, LB, RPM_BINS,
         SEVERITY, CONFIDENCE, SUBSYSTEM, EVENT_TYPES,
         STATUS_OK, STATUS_ABSENT, STATUS_CONSTANT, STATUS_IMPLAUSIBLE,
-        DEFAULT_PROFILE, makeProfile, resampleIntervalMs,
+        DEFAULT_PROFILE, makeProfile, profileFromVehicle, resampleIntervalMs,
         Sample, emptyValues, Resampler, ChannelHealthTracker, StateSegmenter,
         Accum, mergeAccums, ChannelStats, SparkMap, EventCollector, SummaryBuilder,
         StaleFeedTracker, staleFilter, staleSeconds, SustainedMinTracker,
+        calibrateLoadScale, peekHeader,
         DetectorContext, BUILT_IN_DETECTORS, runDetectors, rankReport,
         readCsv, resolveChannel, aliasRank, normalizeHeader,
         rpmBinOf, loadBinOf,

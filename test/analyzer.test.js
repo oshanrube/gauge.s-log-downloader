@@ -553,3 +553,99 @@ test('a dropped intake reading does not invent a heat soak finding', () => {
     assert.ok(report.summary.timeline.ambientEstimateC > 30,
         `ambient should track the real level, got ${report.summary.timeline.ambientEstimateC}`);
 });
+
+// ── Learned load scale ───────────────────────────────────────────────────
+
+test('full load is learned from the drive rather than assumed', () => {
+    // A big engine that pulls to 900 mg/str. The generic 400 would call
+    // two-thirds of its range a full-load pull.
+    const log = new SyntheticLog()
+        .phase({ seconds: 300, rpm: 2000, load: 250, tps: 20, speed: 60, coolant: 92 })
+        .phase({ seconds: 60, rpm: 4000, load: 900, tps: 75, speed: 120, coolant: 95 })
+        .phase({ seconds: 300, rpm: 2000, load: 250, tps: 20, speed: 60, coolant: 92 })
+        .build();
+
+    const scale = CarDoctor.calibrateLoadScale(log, CarDoctor.DEFAULT_PROFILE);
+    assert.ok(scale, 'a drive with real full-throttle running must calibrate');
+    assert.ok(Math.abs(scale.highLoadThreshold - 900) < 100,
+        `expected about 900 mg/str, got ${scale.highLoadThreshold}`);
+
+    const report = analyze(log);
+    assert.strictEqual(report.overview.loadScaleCalibrated, true);
+    assert.ok(report.overview.highLoadThreshold > 700);
+});
+
+test('a drive with no full-throttle running keeps the generic scale', () => {
+    // Gentle pottering proves nothing about what this engine can make, so the
+    // default must stand rather than be set by whatever the drive happened to do.
+    const log = new SyntheticLog()
+        .phase({ seconds: 600, rpm: 1800, load: 150, tps: 15, speed: 50, coolant: 92 })
+        .build();
+
+    assert.strictEqual(CarDoctor.calibrateLoadScale(log, CarDoctor.DEFAULT_PROFILE), null);
+    const report = analyze(log);
+    assert.strictEqual(report.overview.loadScaleCalibrated, false);
+    assert.strictEqual(report.overview.highLoadThreshold, CarDoctor.DEFAULT_PROFILE.highLoadThreshold);
+});
+
+test('a log without a throttle channel cannot calibrate, and says so', () => {
+    const lines = ['Timestamp (ms),engine speed (RPM),engine load (mg/str),coolant temp (C)'];
+    for (let i = 0; i < 4000; i++) {
+        lines.push(`${i * 66},${2000 + i % 11},${300 + i % 23},${92 + (i % 5) * 0.25}`);
+    }
+    const log = lines.join('\n');
+    assert.strictEqual(CarDoctor.calibrateLoadScale(log, CarDoctor.DEFAULT_PROFILE), null,
+        'no throttle channel means no evidence of full throttle');
+    assert.strictEqual(analyze(log).overview.loadScaleCalibrated, false);
+});
+
+test('one load spike cannot set the scale', () => {
+    // The same failure the ambient estimate had: a quantile, not a maximum.
+    const rows = new SyntheticLog()
+        .phase({ seconds: 200, rpm: 2000, load: 250, tps: 20, speed: 60, coolant: 92 })
+        .phase({ seconds: 60, rpm: 4000, load: 500, tps: 75, speed: 120, coolant: 95 })
+        .build()
+        .split('\n');
+    // Engine load is column 2. One absurd reading while at full throttle.
+    const spikeRow = rows.length - 10;
+    const cells = rows[spikeRow].split(',');
+    cells[2] = '2400.00';
+    rows[spikeRow] = cells.join(',');
+
+    const scale = CarDoctor.calibrateLoadScale(rows.join('\n'), CarDoctor.DEFAULT_PROFILE);
+    assert.ok(scale.highLoadThreshold < 700,
+        `one spike must not drag the scale up, got ${scale.highLoadThreshold}`);
+});
+
+// ── The shared vehicle record ────────────────────────────────────────────
+
+test('the vehicle record carries outside air into the analysis', () => {
+    // One record, two consumers: prose for the AI hand-off, numbers for here.
+    const vehicle = { chassis: 'E36', engine: 'M52B28', ecu: 'MS41', location: 'Colombo', ambient: '31' };
+    const profile = CarDoctor.profileFromVehicle(vehicle);
+    assert.strictEqual(profile.ambientC, 31);
+    assert.strictEqual(profile.name, 'E36 M52B28');
+
+    // The figure has to survive the trip into the pipeline and be used as a
+    // measurement, which the report states outright.
+    const log = new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, iat: 62 })
+        .build();
+
+    const stated = finding(analyze(log, { profile }), 'air.intake_heatsoak');
+    assert.ok(stated, '62 degC intake on a stated 31 degC day is a 31 degC rise');
+    assert.ok(stated.evidence.some(e => e.label === 'Outside air' && e.value.includes('31.0')),
+        'the report must show it used the stated figure, not its own guess');
+
+    // A hot enough day explains the same intake temperature away entirely.
+    const hotDay = Object.assign({}, vehicle, { ambient: '45' });
+    assert.ok(!has(analyze(log, { profile: CarDoctor.profileFromVehicle(hotDay) }), 'air.intake_heatsoak'),
+        '62 degC intake on a 45 degC day is just a hot day');
+});
+
+test('junk in the ambient box is ignored rather than believed', () => {
+    for (const ambient of ['', '  ', 'warm', '999', '-200']) {
+        assert.strictEqual(CarDoctor.profileFromVehicle({ ambient }).ambientC, null,
+            `"${ambient}" must not become a temperature`);
+    }
+});
