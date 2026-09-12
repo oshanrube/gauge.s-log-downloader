@@ -113,6 +113,11 @@ each one. This is the Car Doctor pipeline, ported from Kotlin so it runs in the
 web app and the Android app alike — that project is retired and this is now the
 only copy.
 
+📖 **[How it decides something is wrong](https://oshanrube.github.io/gauge.s-log-downloader/docs/how-it-works.html)**
+— a plain-English walkthrough with diagrams, for anyone who wants to know what
+the report is actually telling them. The rest of this section is the technical
+summary.
+
 **Analysis runs entirely on the device.** A drive log is never uploaded; the
 diagnosis needs no internet at all, which matters because the field where you
 collect logs is usually the field with no signal.

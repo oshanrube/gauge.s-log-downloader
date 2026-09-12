@@ -597,6 +597,93 @@
         }
     }
 
+    /**
+     * Channels that genuinely move from one raw sample to the next while an
+     * engine is running. Slow channels like coolant repeat legitimately, so
+     * they carry no information about whether the feed is live.
+     */
+    const LIVENESS_CHANNELS = [CH.RPM, CH.ENGINE_LOAD, CH.MAF, CH.IGNITION_ADVANCE];
+    /** Below this many present liveness channels there is no way to tell. */
+    const MIN_LIVENESS_CHANNELS = 3;
+    /** How long every liveness channel must sit bit-identical to count as frozen. */
+    const STALE_FEED_SECONDS = 2.0;
+
+    /**
+     * Finds stretches where the logger was repeating stale values.
+     *
+     * When an ECU stops answering - the engine is switched off, the connection
+     * drops - a logger typically keeps writing its last received values rather
+     * than writing nothing. Downstream that is indistinguishable from a running
+     * engine holding perfectly steady, and it is worse than useless: on the
+     * reference log the final 35 seconds are frozen at 824 rpm while the
+     * analog input correctly records the battery falling to 12.4 V with the
+     * alternator stopped, which reads as a 35-second charging fault on a car
+     * that was simply parked.
+     *
+     * Several independent channels landing on bit-identical values is the
+     * signature. A real engine is noisy: on that log the longest such stretch
+     * during actual driving is 0.4 s, against 35 s for the frozen tail.
+     */
+    class StaleFeedTracker {
+        constructor(minSeconds = STALE_FEED_SECONDS) {
+            this.minMs = minSeconds * 1000;
+            this.previous = null;
+            this.prevTimeMs = null;
+            this.runStartMs = null;
+            this.spans = [];
+        }
+
+        observe(sample) {
+            if (this.previous) {
+                let compared = 0;
+                let identical = 0;
+                for (const channel of LIVENESS_CHANNELS) {
+                    const before = this.previous[channel.ordinal];
+                    const now = sample.values[channel.ordinal];
+                    if (Number.isNaN(before) || Number.isNaN(now)) continue;
+                    compared++;
+                    if (before === now) identical++;
+                }
+                if (compared >= MIN_LIVENESS_CHANNELS && identical === compared) {
+                    if (this.runStartMs === null) this.runStartMs = this.prevTimeMs;
+                } else {
+                    this.closeRun(this.prevTimeMs);
+                }
+            }
+            // Row value arrays are never mutated after the reader builds them.
+            this.previous = sample.values;
+            this.prevTimeMs = sample.timeMs;
+        }
+
+        closeRun(endMs) {
+            if (this.runStartMs !== null && endMs - this.runStartMs >= this.minMs) {
+                this.spans.push({ startMs: this.runStartMs, endMs });
+            }
+            this.runStartMs = null;
+        }
+
+        finish() {
+            this.closeRun(this.prevTimeMs);
+            return this.spans;
+        }
+    }
+
+    /**
+     * Membership test over time-ordered spans, with a cursor rather than a scan
+     * so the hot path stays O(1) per sample.
+     */
+    function staleFilter(spans) {
+        let i = 0;
+        return timeMs => {
+            while (i < spans.length && timeMs > spans[i].endMs) i++;
+            return i < spans.length && timeMs >= spans[i].startMs;
+        };
+    }
+
+    function staleSeconds(spans) {
+        return spans.reduce((total, s) => total + (s.endMs - s.startMs), 0) / 1000;
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // 3. Segment
     // ══════════════════════════════════════════════════════════════════════
@@ -1386,7 +1473,7 @@
             return { sparkMap: this.sparkMap, closedThrottlePct: closed };
         }
 
-        build(readStats, health) {
+        build(readStats, health, staleSpans = []) {
             const secondsToWarm = (this.warmReachedMs !== null && this.runningStartMs !== null)
                 ? (this.warmReachedMs - this.runningStartMs) / 1000
                 : null;
@@ -1411,6 +1498,7 @@
                 events: this.events,
                 timeline,
                 sparkMap: this.sparkMap,
+                staleSpans,
             });
         }
     }
@@ -1802,7 +1890,7 @@
 
             const ev = [
                 evidence('Peak temperature', ctx.fmt(worst.peakMagnitude, 1) + ' degC', worst.startMs),
-                evidence('First excursion at', ctx.fmtTime(events[0].startMs), events[0].startMs),
+                evidence('First excursion at', ctx.fmtTime(events[0].startMs)),
                 evidence('Time over limit', ctx.fmt(totalSec, 0) + 's across ' + events.length + ' excursion(s)'),
             ];
             if (summary.timeline.peakCoolantC !== null) {
@@ -2018,7 +2106,7 @@
             const longest = episodes.reduce((max, e) => Math.max(max, e.durationSec), 0);
             const ev = [
                 evidence('Knock episodes', total + ' distinct occurrences'),
-                evidence('Worst correction', ctx.fmt(worstDegrees, 2) + ' deg at ' + ctx.fmtTime(worst.startMs), worst.startMs),
+                evidence('Worst correction', ctx.fmt(worstDegrees, 2) + ' deg', worst.startMs),
                 evidence('Longest episode', ctx.fmt(longest, 1) + 's'),
                 evidence('Time with correction active', ctx.fmt(activeFraction * 100, 1) + '% of warm running'),
             ];
@@ -2099,7 +2187,7 @@
 
             const ev = [
                 evidence('Distinct retard events', String(total)),
-                evidence('Worst retard', ctx.fmt(worst.peakMagnitude, 1) + ' deg at ' + ctx.fmtTime(worst.startMs), worst.startMs),
+                evidence('Worst retard', ctx.fmt(worst.peakMagnitude, 1) + ' deg', worst.startMs),
             ];
             if (worst.context.load !== undefined) {
                 ev.push(evidence('Load at worst event', ctx.fmt(worst.context.load, 0), worst.startMs));
@@ -2264,7 +2352,7 @@
             if (sags.length > 0) {
                 const worst = sags.reduce((a, b) => (b.durationSec > a.durationSec ? b : a));
                 ev.push(evidence('Longest sag',
-                    ctx.fmt(worst.durationSec, 1) + 's from ' + ctx.fmtTime(worst.startMs), worst.startMs));
+                    ctx.fmt(worst.durationSec, 1) + 's', worst.startMs));
             }
 
             return {
@@ -2626,6 +2714,8 @@
             unusableChannels: [...summary.channelHealth.values()]
                 .filter(h => !h.usable && h.samples > 0)
                 .map(h => h.channel),
+            staleSeconds: staleSeconds(summary.staleSpans || []),
+            staleSpanCount: (summary.staleSpans || []).length,
         };
 
         return {
@@ -2679,6 +2769,10 @@
         }
         if (o.unusableChannels.length) {
             lines.push('Unusable channels : ' + o.unusableChannels.map(c => c.displayName).join(', '));
+        }
+        if (o.staleSeconds > 0) {
+            lines.push('Frozen feed       : ' + o.staleSeconds.toFixed(1) + 's excluded in ' +
+                o.staleSpanCount + ' stretch(es) - the logger was repeating stale values');
         }
         lines.push('');
         lines.push('Time in each operating state:');
@@ -2760,7 +2854,29 @@
             const segmenter = new StateSegmenter(profile, calibration ? calibration.closedThrottlePct : null);
             const builder = new SummaryBuilder(profile, calibration ? calibration.sparkMap : null);
 
+            // A frozen feed can only be recognised after it has been frozen for
+            // a while, so pass 1 maps the stale stretches and pass 2 drops them.
+            // Two passes already exist for the spark map; this rides along.
+            //
+            // Pass 1 therefore still learns from the frozen samples, which is
+            // benign rather than merely tolerable: a frozen value is a repeat of
+            // the last genuine reading, so it lands in the cell that reading
+            // already belonged to and pulls a median toward a value that was
+            // already typical there. Freezing 90 s inside a hard pull - the worst
+            // case, since that cell is one the knock rule actually consults -
+            // moves the learned baseline by 0.004 degrees.
+            const tracker = calibration ? null : new StaleFeedTracker();
+            const spans = calibration ? calibration.staleSpans : [];
+            const isStale = staleFilter(spans);
+
             const readStats = readCsv(text, sample => {
+                if (tracker) tracker.observe(sample);
+                // Dropped outright rather than marked: a repeated value is not a
+                // measurement, so it must not reach the health tracker either,
+                // where it would make a live channel look dead. The time jump
+                // this leaves behind is handled exactly like a logging pause.
+                if (isStale(sample.timeMs)) return;
+
                 // Health is judged on the raw signal. A channel that is constant
                 // in the file must not be rescued by the resampler's averaging,
                 // and one that is noisy must not be blamed on it.
@@ -2775,8 +2891,10 @@
             resampler.flush(resampled => builder.accept(segmenter.analyze(resampled)));
 
             return {
-                summary: builder.build(readStats, health.finish()),
-                calibration: builder.calibration(),
+                summary: builder.build(readStats, health.finish(), spans),
+                calibration: Object.assign(builder.calibration(), {
+                    staleSpans: tracker ? tracker.finish() : spans,
+                }),
             };
         };
 
@@ -2832,6 +2950,8 @@
                 stateBreakdown: o.stateBreakdown.map(e => ({
                     name: e.state.name, label: e.state.label, seconds: e.seconds,
                 })),
+                staleSeconds: o.staleSeconds,
+                staleSpanCount: o.staleSpanCount,
             },
             groups: report.groups.map(g => ({
                 primary: plainFinding(g.primary),
@@ -2856,6 +2976,7 @@
         DEFAULT_PROFILE, makeProfile, resampleIntervalMs,
         Sample, emptyValues, Resampler, ChannelHealthTracker, StateSegmenter,
         Accum, mergeAccums, ChannelStats, SparkMap, EventCollector, SummaryBuilder,
+        StaleFeedTracker, staleFilter, staleSeconds,
         DetectorContext, BUILT_IN_DETECTORS, runDetectors, rankReport,
         readCsv, resolveChannel, aliasRank, normalizeHeader,
         rpmBinOf, loadBinOf,

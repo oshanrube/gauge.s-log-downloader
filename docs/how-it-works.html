@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="How the Gauge.S log analyser decides something is wrong with your engine, explained in plain English.">
+<meta name="color-scheme" content="light dark">
+<title>How the Car Doctor Thinks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+    /* Light palette is the complete set; the two blocks below redefine only
+       these tokens, so every colour resolves in all three theme states. */
+    :root {
+        --paper:      #EEF1F5;
+        --surface:    #F8FAFC;
+        --ink:        #161C24;
+        --ink-soft:   #4A5765;
+        --ink-faint:  #6F7C8B;
+        --rule:       #C9D2DC;
+        --rule-soft:  #DDE4EC;
+        --blue:       #14568C;
+        --blue-wash:  #DCE7F2;
+        --amber:      #B06E05;
+        --amber-wash: #F6E8CE;
+        --red:        #A83228;
+        --red-wash:   #F4DCD8;
+        --green:      #256B50;
+        --green-wash: #D8EBE2;
+
+        --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+        --body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+            --paper:      #10151B;
+            --surface:    #171E26;
+            --ink:        #DDE4EC;
+            --ink-soft:   #A2AEBC;
+            --ink-faint:  #7E8B99;
+            --rule:       #2B3641;
+            --rule-soft:  #212A34;
+            --blue:       #6FAEE6;
+            --blue-wash:  #17293B;
+            --amber:      #E5A53C;
+            --amber-wash: #322616;
+            --red:        #E88274;
+            --red-wash:   #331E1B;
+            --green:      #66C39C;
+            --green-wash: #14291F;
+        }
+    }
+
+    :root[data-theme="dark"] {
+        --paper:      #10151B;
+        --surface:    #171E26;
+        --ink:        #DDE4EC;
+        --ink-soft:   #A2AEBC;
+        --ink-faint:  #7E8B99;
+        --rule:       #2B3641;
+        --rule-soft:  #212A34;
+        --blue:       #6FAEE6;
+        --blue-wash:  #17293B;
+        --amber:      #E5A53C;
+        --amber-wash: #322616;
+        --red:        #E88274;
+        --red-wash:   #331E1B;
+        --green:      #66C39C;
+        --green-wash: #14291F;
+    }
+
+    body {
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--body);
+        font-size: 16px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    .page {
+        max-width: 780px;
+        margin: 0 auto;
+        padding-inline: 20px;
+        padding-block: 56px 80px;
+        display: flex;
+        flex-direction: column;
+        gap: 56px;
+    }
+
+    /* ── Type scale ──────────────────────────────────────────────────── */
+    h1, h2, h3 {
+        font-family: var(--display);
+        font-weight: 700;
+        line-height: 1.08;
+        text-wrap: balance;
+        margin: 0;
+        letter-spacing: 0.005em;
+    }
+    h1 { font-size: clamp(2.6rem, 8vw, 3.9rem); }
+    h2 { font-size: clamp(1.85rem, 5.2vw, 2.5rem); }
+    h3 { font-size: 1.3rem; font-weight: 600; }
+    p  { margin: 0; }
+
+    .eyebrow {
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        font-weight: 500;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--blue);
+    }
+
+    .lede {
+        font-size: 1.14rem;
+        color: var(--ink-soft);
+        max-width: 62ch;
+    }
+
+    code, .chan {
+        font-family: var(--mono);
+        font-size: 0.87em;
+        background: var(--blue-wash);
+        color: var(--blue);
+        padding: 0.1em 0.36em;
+        border-radius: 3px;
+        white-space: nowrap;
+    }
+
+    strong { font-weight: 600; }
+
+    /* ── Hero ────────────────────────────────────────────────────────── */
+    .hero {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        border-bottom: 2px solid var(--ink);
+        padding-bottom: 40px;
+    }
+
+    .hero-stat {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 10px 28px;
+        margin-top: 8px;
+        padding: 20px 22px;
+        background: var(--surface);
+        border-left: 3px solid var(--amber);
+    }
+
+    .stat-fig {
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: 3.4rem;
+        line-height: 0.85;
+        font-variant-numeric: tabular-nums;
+    }
+    .stat-fig.bad  { color: var(--red); }
+    .stat-fig.good { color: var(--green); }
+
+    .stat-cap {
+        font-size: 0.86rem;
+        color: var(--ink-soft);
+        max-width: 22ch;
+        line-height: 1.4;
+    }
+
+    .stat-sep {
+        font-family: var(--display);
+        font-size: 1.6rem;
+        color: var(--ink-faint);
+        align-self: center;
+    }
+
+    /* ── Sections ────────────────────────────────────────────────────── */
+    section {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+    }
+
+    .section-head {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    /* ── Playground analogy — the "like I'm 5" voice, set apart ──────── */
+    .analogy {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0 16px;
+        align-items: start;
+        padding: 18px 20px;
+        background: var(--amber-wash);
+        border-radius: 2px;
+    }
+
+    .analogy-tag {
+        font-family: var(--display);
+        font-size: 0.95rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--amber);
+        padding-top: 2px;
+        writing-mode: horizontal-tb;
+    }
+
+    .analogy p {
+        font-size: 1.02rem;
+        color: var(--ink);
+    }
+
+    /* ── The pipeline: a real sequence, so it gets real numbers ─────── */
+    .stages {
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--rule);
+    }
+
+    .stage {
+        display: grid;
+        grid-template-columns: 3.1rem 1fr;
+        gap: 4px 14px;
+        padding: 16px 0;
+        border-bottom: 1px solid var(--rule);
+    }
+
+    .stage-n {
+        font-family: var(--display);
+        font-size: 1.9rem;
+        font-weight: 700;
+        line-height: 1;
+        color: var(--blue);
+        font-variant-numeric: tabular-nums;
+        grid-row: span 2;
+        padding-top: 2px;
+    }
+
+    .stage-name {
+        font-family: var(--display);
+        font-size: 1.35rem;
+        font-weight: 600;
+        line-height: 1.15;
+    }
+
+    .stage-name span {
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        font-weight: 400;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin-left: 8px;
+        white-space: nowrap;
+    }
+
+    .stage-text {
+        font-size: 0.95rem;
+        color: var(--ink-soft);
+    }
+
+    /* ── Trick cards ─────────────────────────────────────────────────── */
+    .trick {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        padding-top: 28px;
+        border-top: 1px solid var(--rule);
+    }
+
+    .trick-head {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    /* ── Figures ─────────────────────────────────────────────────────── */
+    figure {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .fig-frame {
+        background: var(--surface);
+        border: 1px solid var(--rule);
+        padding: 14px;
+        overflow-x: auto;
+    }
+
+    figure svg {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        color: var(--ink-soft);
+    }
+
+    figcaption {
+        font-size: 0.85rem;
+        line-height: 1.5;
+        color: var(--ink-faint);
+        max-width: 64ch;
+    }
+
+    figcaption b {
+        color: var(--ink-soft);
+        font-weight: 600;
+    }
+
+    /* ── Verdict rows — dashboard lamp semantics ─────────────────────── */
+    .lamps {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        background: var(--rule);
+        border: 1px solid var(--rule);
+    }
+
+    .lamp {
+        display: grid;
+        grid-template-columns: 8rem 1fr;
+        gap: 4px 14px;
+        padding: 12px 14px;
+        background: var(--surface);
+        align-items: baseline;
+    }
+
+    .lamp-name {
+        font-family: var(--display);
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+    .lamp-name.crit { color: var(--red); }
+    .lamp-name.warn { color: var(--amber); }
+    .lamp-name.info { color: var(--blue); }
+    .lamp-name.ok   { color: var(--green); }
+
+    .lamp-text {
+        font-size: 0.92rem;
+        color: var(--ink-soft);
+    }
+
+    /* ── Closing note ────────────────────────────────────────────────── */
+    .closing {
+        padding: 24px 24px 26px;
+        background: var(--green-wash);
+        border-left: 3px solid var(--green);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .closing h2 { font-size: 1.7rem; }
+
+    .footer a {
+        color: var(--blue);
+        text-decoration-color: color-mix(in srgb, var(--blue) 40%, transparent);
+        text-underline-offset: 2px;
+    }
+
+    .footer {
+        border-top: 1px solid var(--rule);
+        padding-top: 20px;
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        line-height: 1.7;
+        color: var(--ink-faint);
+    }
+
+    @media (max-width: 560px) {
+        .stage { grid-template-columns: 2.4rem 1fr; }
+        .lamp { grid-template-columns: 1fr; }
+        .analogy { grid-template-columns: 1fr; gap: 6px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        * { animation: none !important; transition: none !important; }
+    }
+</style>
+<style>
+    /* Shell reset. The page's own palette and type follow below; this only
+       clears browser defaults the way the authoring environment did. */
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; }
+    img, svg { max-width: 100%; }
+    [hidden] { display: none !important; }
+    a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="page">
+
+    <header class="hero">
+        <p class="eyebrow">Engine log diagnosis · how it decides</p>
+        <h1>How the Car Doctor Thinks</h1>
+        <p class="lede">
+            It reads a spreadsheet of numbers from your engine and says what's wrong with the car.
+            The hard part isn't spotting a weird number. It's knowing that almost no number is weird
+            on its own.
+        </p>
+
+        <div class="hero-stat">
+            <div>
+                <div class="stat-fig bad">679</div>
+                <p class="stat-cap">alarms from the obvious version of the knock rule, on a real log</p>
+            </div>
+            <div class="stat-sep">→</div>
+            <div>
+                <div class="stat-fig good">0</div>
+                <p class="stat-cap">from the shipped version, on the same log — correctly, that engine is fine</p>
+            </div>
+        </div>
+    </header>
+
+    <section>
+        <div class="section-head">
+            <p class="eyebrow">The one big idea</p>
+            <h2>A number is only good or bad for what the engine was doing</h2>
+        </div>
+
+        <div class="analogy">
+            <div class="analogy-tag">Like you're 5</div>
+            <p>
+                A heart rate of 150 is an emergency if the kid is asleep, and completely normal if
+                they're haring around the playground. Same number. You cannot judge it until you
+                know what they were doing.
+            </p>
+        </div>
+
+        <p>
+            Engines are exactly like this. Suppose the computer is adding <strong>15% extra
+            fuel</strong>. If the car is cruising steadily down a motorway, that's alarming — something
+            is wrong. If it's 200 milliseconds after you stamped on the accelerator, it's completely
+            normal, because adding fuel is precisely what the engine is <em>meant</em> to do when you
+            ask it for power.
+        </p>
+
+        <figure>
+            <div class="fig-frame">
+                <svg viewBox="0 0 560 208" role="img"
+                     aria-label="The same fuel trim reading of plus 15 percent is normal during a throttle stab and alarming at steady cruise">
+                    <!-- Left: same reading, innocent context -->
+                    <rect x="8" y="8" width="260" height="192" fill="none" stroke="currentColor"
+                          stroke-width="1" opacity="0.35"/>
+                    <text x="24" y="34" font-family="IBM Plex Mono, monospace" font-size="10"
+                          letter-spacing="1.5" fill="currentColor" opacity="0.75">READING</text>
+                    <text x="24" y="78" font-family="Barlow Condensed, sans-serif" font-size="44"
+                          font-weight="700" fill="currentColor">+15%</text>
+                    <text x="24" y="98" font-family="IBM Plex Mono, monospace" font-size="10"
+                          fill="currentColor" opacity="0.75">extra fuel</text>
+                    <line x1="24" y1="116" x2="244" y2="116" stroke="currentColor"
+                          stroke-width="1" opacity="0.25"/>
+                    <text x="24" y="140" font-family="IBM Plex Mono, monospace" font-size="10"
+                          letter-spacing="1.5" fill="currentColor" opacity="0.75">DOING</text>
+                    <text x="24" y="162" font-family="IBM Plex Sans, sans-serif" font-size="14"
+                          font-weight="600" fill="#256B50">Throttle transient</text>
+                    <text x="24" y="182" font-family="IBM Plex Sans, sans-serif" font-size="13"
+                          fill="#256B50">Verdict: normal</text>
+
+                    <!-- Right: same reading, guilty context -->
+                    <rect x="292" y="8" width="260" height="192" fill="none" stroke="currentColor"
+                          stroke-width="1" opacity="0.35"/>
+                    <text x="308" y="34" font-family="IBM Plex Mono, monospace" font-size="10"
+                          letter-spacing="1.5" fill="currentColor" opacity="0.75">READING</text>
+                    <text x="308" y="78" font-family="Barlow Condensed, sans-serif" font-size="44"
+                          font-weight="700" fill="currentColor">+15%</text>
+                    <text x="308" y="98" font-family="IBM Plex Mono, monospace" font-size="10"
+                          fill="currentColor" opacity="0.75">extra fuel</text>
+                    <line x1="308" y1="116" x2="528" y2="116" stroke="currentColor"
+                          stroke-width="1" opacity="0.25"/>
+                    <text x="308" y="140" font-family="IBM Plex Mono, monospace" font-size="10"
+                          letter-spacing="1.5" fill="currentColor" opacity="0.75">DOING</text>
+                    <text x="308" y="162" font-family="IBM Plex Sans, sans-serif" font-size="14"
+                          font-weight="600" fill="#B06E05">Steady cruise</text>
+                    <text x="308" y="182" font-family="IBM Plex Sans, sans-serif" font-size="13"
+                          fill="#B06E05">Verdict: something is wrong</text>
+                </svg>
+            </div>
+            <figcaption>
+                <b>Identical readings, opposite conclusions.</b> This is why the very first thing the
+                analyser does is label every moment of the drive with what the engine was doing.
+                Every rule then declares which labels it is allowed to look at, and it never sees
+                anything else.
+            </figcaption>
+        </figure>
+
+        <p>
+            So the analyser tags every single moment of your drive with one of nine labels: warming
+            up, idling, cruising steadily, pulling hard, coasting downhill, throttle moving, and so
+            on. A rule about steady-state fuelling simply never gets shown the moments where you
+            were stamping on the pedal. Not filtered out later — never shown at all.
+        </p>
+    </section>
+
+    <section>
+        <div class="section-head">
+            <p class="eyebrow">The assembly line · six stages, in order</p>
+            <h2>From a pile of numbers to a diagnosis</h2>
+        </div>
+
+        <p>
+            Your log is a spreadsheet: a row every few milliseconds, a column per sensor. A
+            35-minute drive is about 32,000 rows. Here's what happens to it.
+        </p>
+
+        <div class="stages">
+            <div class="stage">
+                <div class="stage-n">1</div>
+                <div class="stage-name">Read it <span>ingest</span></div>
+                <p class="stage-text">
+                    Every logger names things differently — <code>engine speed (RPM)</code>,
+                    <code>RPM</code>, <code>..RPM (RPM)</code> all mean the same thing. Translate
+                    them all into one vocabulary, once, at the door. That way adding support for a
+                    new logger never means touching a single diagnosis rule.
+                </p>
+            </div>
+            <div class="stage">
+                <div class="stage-n">2</div>
+                <div class="stage-name">Tidy it <span>condition</span></div>
+                <p class="stage-text">
+                    Readings don't arrive on a neat beat, and different sensors update at wildly
+                    different speeds — engine speed many times a second, coolant temperature once
+                    every ten seconds. Put everything on a steady 5-per-second drumbeat. Then check
+                    each sensor is actually alive.
+                </p>
+            </div>
+            <div class="stage">
+                <div class="stage-n">3</div>
+                <div class="stage-name">Label it <span>segment</span></div>
+                <p class="stage-text">
+                    Tag every moment with what the engine was doing. This is the backbone — the
+                    thing the whole analysis rests on.
+                </p>
+            </div>
+            <div class="stage">
+                <div class="stage-n">4</div>
+                <div class="stage-name">Squash it <span>aggregate</span></div>
+                <p class="stage-text">
+                    Throw the individual readings away and keep summaries instead: for each
+                    situation, the average, the spread, the worst value. Like keeping a report card
+                    rather than every homework sheet. A six-hour drive squashes to exactly the same
+                    size as a ten-minute one.
+                </p>
+            </div>
+            <div class="stage">
+                <div class="stage-n">5</div>
+                <div class="stage-name">Ask the rules <span>detect</span></div>
+                <p class="stage-text">
+                    Fourteen rules, each one a small self-contained question — "is there a vacuum
+                    leak?", "is the thermostat stuck?". Each declares up front which sensors it
+                    needs, which situations it's valid in, and how many seconds of evidence it
+                    demands. Those three gates are enforced <em>for</em> it, so no rule author can
+                    forget one.
+                </p>
+            </div>
+            <div class="stage">
+                <div class="stage-n">6</div>
+                <div class="stage-name">Group and rank <span>rank</span></div>
+                <p class="stage-text">
+                    One fault often trips three rules. A vacuum leak shows up as a lean mixture,
+                    <em>and</em> a lumpy idle, <em>and</em> an idle valve working flat out. Listing
+                    three findings invites three repairs. So findings that share a cause collapse
+                    into one diagnosis with three pieces of evidence.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <div class="section-head">
+            <p class="eyebrow">The clever bits</p>
+            <h2>Four tricks that stop it crying wolf</h2>
+        </div>
+
+        <p>
+            Every one of these exists because the naive version got a real log wrong. They aren't
+            polish — each is the difference between a tool a mechanic trusts and one they stop
+            opening.
+        </p>
+
+        <!-- Trick: shape across load -->
+        <div class="trick">
+            <div class="trick-head">
+                <h3>Telling a hole from an empty tank, by the shape</h3>
+            </div>
+
+            <div class="analogy">
+                <div class="analogy-tag">Like you're 5</div>
+                <p>
+                    Your straw has a tiny hole in it. Sipping gently, you get mostly air — the hole
+                    ruins it. Sucking as hard as you can, you barely notice. But if the cup is nearly
+                    <em>empty</em>, you struggle no matter how hard you suck. Same complaint, and you
+                    can tell which is which by whether it gets better when you suck harder.
+                </p>
+            </div>
+
+            <p>
+                A split air hose lets in a roughly fixed amount of extra air. At idle the engine is
+                barely breathing, so that leak is a big slice of the total and the computer adds a
+                lot of fuel to compensate. At full throttle the engine is gulping air and the same
+                leak is a rounding error. So the correction <strong>fades as you push harder</strong>.
+                A fuel supply problem doesn't fade — the engine is short of fuel everywhere.
+            </p>
+
+            <figure>
+                <div class="fig-frame">
+                    <svg viewBox="0 0 560 300" role="img"
+                         aria-label="Fuel correction plotted against engine load: a vacuum leak falls from about 15 percent to 3 percent as load rises, while a fuel supply shortfall stays flat near 15 percent">
+                        <!-- gridlines at 0, 5, 10, 15, 20 % -->
+                        <line x1="56" y1="252" x2="536" y2="252" stroke="currentColor" stroke-width="1" opacity="0.45"/>
+                        <line x1="56" y1="195" x2="536" y2="195" stroke="currentColor" stroke-width="1" opacity="0.15"/>
+                        <line x1="56" y1="138" x2="536" y2="138" stroke="currentColor" stroke-width="1" opacity="0.15"/>
+                        <line x1="56" y1="81"  x2="536" y2="81"  stroke="currentColor" stroke-width="1" opacity="0.15"/>
+                        <line x1="56" y1="24"  x2="536" y2="24"  stroke="currentColor" stroke-width="1" opacity="0.15"/>
+                        <line x1="56" y1="24"  x2="56"  y2="252" stroke="currentColor" stroke-width="1" opacity="0.45"/>
+
+                        <!-- y labels -->
+                        <text x="48" y="256" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">0%</text>
+                        <text x="48" y="199" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">5%</text>
+                        <text x="48" y="142" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">10%</text>
+                        <text x="48" y="85"  text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">15%</text>
+                        <text x="48" y="28"  text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">20%</text>
+
+                        <!-- x ticks: load in mg/stroke -->
+                        <text x="56"  y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">0</text>
+                        <text x="148" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">100</text>
+                        <text x="240" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">200</text>
+                        <text x="333" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">300</text>
+                        <text x="425" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">400</text>
+                        <text x="517" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">500</text>
+                        <text x="296" y="290" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor" opacity="0.85">engine load (mg/stroke) — how hard it's working →</text>
+
+                        <!-- "this is a real correction" threshold -->
+                        <line x1="56" y1="161" x2="536" y2="161" stroke="currentColor" stroke-width="1"
+                              stroke-dasharray="2 4" opacity="0.5"/>
+                        <text x="60" y="157" font-family="IBM Plex Mono, monospace"
+                              font-size="9" fill="currentColor" opacity="0.7">8% threshold</text>
+
+                        <!-- Fuel supply shortfall: flat -->
+                        <polyline points="144,79 222,81 499,83" fill="none" stroke="#A83228" stroke-width="2.5"/>
+                        <circle cx="144" cy="79" r="4" fill="#A83228"/>
+                        <circle cx="222" cy="81" r="4" fill="#A83228"/>
+                        <circle cx="499" cy="83" r="4" fill="#A83228"/>
+                        <text x="489" y="68" text-anchor="end" font-family="IBM Plex Sans, sans-serif"
+                              font-size="12" font-weight="600" fill="#A83228">Not enough fuel — stays flat</text>
+
+                        <!-- Vacuum leak: falls away -->
+                        <polyline points="144,83 222,161 499,222" fill="none" stroke="#14568C" stroke-width="2.5"/>
+                        <circle cx="144" cy="83" r="4" fill="#14568C"/>
+                        <circle cx="222" cy="161" r="4" fill="#14568C"/>
+                        <circle cx="499" cy="222" r="4" fill="#14568C"/>
+                        <text x="489" y="240" text-anchor="end" font-family="IBM Plex Sans, sans-serif"
+                              font-size="12" font-weight="600" fill="#14568C">Air leak — fades as load rises</text>
+
+                        <text x="60" y="70" font-family="IBM Plex Mono, monospace" font-size="10"
+                              fill="currentColor" opacity="0.75">both ≈ 15% at low load</text>
+                    </svg>
+                </div>
+                <figcaption>
+                    <b>Same symptom at idle, different diagnosis.</b> Real figures from a test log:
+                    the leak reads 14.8% at low load and 2.6% at high load; a supply shortfall sits
+                    near 15% throughout. Below the 8% line a correction is just noise and nothing
+                    is reported at all. The analyser can only see the difference because it files fuel
+                    corrections into load bands rather than averaging the whole drive into one
+                    number — an average would show roughly 9% for both.
+                </figcaption>
+            </figure>
+        </div>
+
+        <!-- Trick: learned baseline -->
+        <div class="trick">
+            <div class="trick-head">
+                <h3>Comparing the engine to itself, not to a textbook</h3>
+            </div>
+
+            <div class="analogy">
+                <div class="analogy-tag">Like you're 5</div>
+                <p>
+                    You can't tell whether a child is unusually short by standing them next to a
+                    grown-up. You have to compare them with other children <em>their own age</em>.
+                </p>
+            </div>
+
+            <p>
+                This is the <strong>679 versus 0</strong> from the top of the page, and it's the best
+                story in the whole system.
+            </p>
+
+            <p>
+                "Knock" is a destructive rattle inside the engine. When it happens, the computer
+                protects the engine by retarding the spark timing. So: spark timing suddenly dropping
+                looks like a great way to detect knock. Write that rule — "timing fell more than 6°
+                while the engine was working hard" — run it on a real log, and it fires
+                <strong>679 times</strong>.
+            </p>
+
+            <p>
+                All 679 are wrong. Spark timing is <em>supposed</em> to fall as load rises. That's
+                the shape of every ignition map ever designed. Timing going from 20° at light load to
+                8° at heavy load isn't a fault; it's the computer reading its own table exactly as
+                intended.
+            </p>
+
+            <figure>
+                <div class="fig-frame">
+                    <svg viewBox="0 0 560 300" role="img"
+                         aria-label="Spark timing falls as engine load rises, which is the ignition map working as designed rather than knock">
+                        <!-- axes -->
+                        <line x1="56" y1="252" x2="536" y2="252" stroke="currentColor" stroke-width="1" opacity="0.45"/>
+                        <line x1="56" y1="24"  x2="56"  y2="252" stroke="currentColor" stroke-width="1" opacity="0.45"/>
+                        <line x1="56" y1="138" x2="536" y2="138" stroke="currentColor" stroke-width="1" opacity="0.15"/>
+                        <line x1="56" y1="81"  x2="536" y2="81"  stroke="currentColor" stroke-width="1" opacity="0.15"/>
+                        <line x1="56" y1="195" x2="536" y2="195" stroke="currentColor" stroke-width="1" opacity="0.15"/>
+
+                        <text x="48" y="256" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">0°</text>
+                        <text x="48" y="199" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">6°</text>
+                        <text x="48" y="142" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">12°</text>
+                        <text x="48" y="85"  text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">18°</text>
+                        <text x="48" y="28"  text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">24°</text>
+                        <text x="20" y="140" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11"
+                              fill="currentColor" opacity="0.85" transform="rotate(-90 20 140)">spark timing</text>
+                        <text x="296" y="290" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor" opacity="0.85">engine load (mg/stroke) — how hard it's working →</text>
+
+                        <text x="113" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">150</text>
+                        <text x="307" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">320</text>
+                        <text x="490" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">480</text>
+
+                        <!-- the engine's own map, learned from this drive -->
+                        <polyline points="113,62 307,176 490,190" fill="none" stroke="#14568C" stroke-width="2.5"/>
+                        <circle cx="113" cy="62" r="4.5" fill="#14568C"/>
+                        <circle cx="307" cy="176" r="4.5" fill="#14568C"/>
+                        <circle cx="490" cy="190" r="4.5" fill="#14568C"/>
+                        <text x="122" y="52" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">20° here…</text>
+                        <text x="316" y="172" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">…8° here</text>
+
+                        <!-- the 12 degree "drop" a naive rule sees -->
+                        <line x1="90" y1="62" x2="90" y2="176" stroke="#A83228" stroke-width="1.5" stroke-dasharray="3 3"/>
+                        <line x1="84" y1="62"  x2="96" y2="62"  stroke="#A83228" stroke-width="1.5"/>
+                        <line x1="84" y1="176" x2="96" y2="176" stroke="#A83228" stroke-width="1.5"/>
+                        <text x="78" y="124" text-anchor="end" font-family="IBM Plex Sans, sans-serif"
+                              font-size="12" font-weight="600" fill="#A83228">12°</text>
+
+                        <rect x="196" y="206" width="330" height="38" fill="none" stroke="#A83228"
+                              stroke-width="1" opacity="0.55"/>
+                        <text x="208" y="222" font-family="IBM Plex Sans, sans-serif" font-size="12"
+                              font-weight="600" fill="#A83228">Naive rule: “timing collapsed — KNOCK!” ×679</text>
+                        <text x="208" y="238" font-family="IBM Plex Sans, sans-serif" font-size="12"
+                              fill="#14568C">Learned baseline: this is exactly normal here. 0 alarms.</text>
+                    </svg>
+                </div>
+                <figcaption>
+                    <b>The fall is the design, not the fault.</b> The fix is to learn what timing
+                    <i>this</i> engine normally runs at each combination of engine speed and load,
+                    from the drive itself, and then ask only "is it lower than its own normal, right
+                    here?" That baseline can't exist until the whole file has been read — which is
+                    why the analyser reads your log <b>twice</b>: once to learn the engine, once to
+                    judge it.
+                </figcaption>
+            </figure>
+
+            <p>
+                It also means the tool ships with no per-car calibration file to maintain, and the
+                baseline is automatically right for your fuel, your altitude and your state of tune.
+            </p>
+        </div>
+
+        <!-- Trick: coalescing -->
+        <div class="trick">
+            <div class="trick-head">
+                <h3>Counting things that happened, not rows in a spreadsheet</h3>
+            </div>
+
+            <div class="analogy">
+                <div class="analogy-tag">Like you're 5</div>
+                <p>
+                    One long "aaaaaaah" is one scream, not ten. If you counted every half-second of
+                    it separately you'd tell everyone the child screamed ten times.
+                </p>
+            </div>
+
+            <p>
+                The analyser looks at five readings per second. Something that goes wrong for two
+                seconds therefore shows up in ten consecutive rows. Reporting "10 knock events" would
+                be a flat lie about how often it happened. So anything that keeps matching within a
+                few seconds is merged into <strong>one occurrence</strong>, keeping the worst value
+                and how long it lasted.
+            </p>
+
+            <figure>
+                <div class="fig-frame">
+                    <svg viewBox="0 0 560 190" role="img"
+                         aria-label="Ten consecutive matching readings over two seconds collapse into one reported occurrence keeping the worst value">
+                        <text x="24" y="26" font-family="IBM Plex Mono, monospace" font-size="10"
+                              letter-spacing="1.5" fill="currentColor" opacity="0.75">WHAT THE SENSOR SENT · 5 per second</text>
+
+                        <line x1="56" y1="86" x2="504" y2="86" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+                        <line x1="56" y1="46" x2="56" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="96" y1="54" x2="96" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="136" y1="50" x2="136" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="176" y1="40" x2="176" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="216" y1="58" x2="216" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="256" y1="52" x2="256" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="296" y1="62" x2="296" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="336" y1="56" x2="336" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="376" y1="66" x2="376" y2="86" stroke="#A83228" stroke-width="3"/>
+                        <line x1="416" y1="60" x2="416" y2="86" stroke="#A83228" stroke-width="3"/>
+
+                        <text x="168" y="46" text-anchor="end" font-family="IBM Plex Mono, monospace"
+                              font-size="10" fill="#A83228">worst: −5.62°</text>
+                        <text x="512" y="90" font-family="IBM Plex Mono, monospace" font-size="10"
+                              fill="currentColor" opacity="0.75">10 rows</text>
+
+                        <text x="24" y="126" font-family="IBM Plex Mono, monospace" font-size="10"
+                              letter-spacing="1.5" fill="currentColor" opacity="0.75">WHAT GETS REPORTED</text>
+                        <rect x="56" y="138" width="360" height="26" fill="#14568C" opacity="0.2"/>
+                        <rect x="56" y="138" width="360" height="26" fill="none" stroke="#14568C" stroke-width="1.5"/>
+                        <text x="68" y="156" font-family="IBM Plex Sans, sans-serif" font-size="12"
+                              font-weight="600" fill="#14568C">1 occurrence · worst −5.62° · lasted 1.8 s</text>
+                        <text x="512" y="156" font-family="IBM Plex Mono, monospace" font-size="10"
+                              fill="currentColor" opacity="0.75">1 event</text>
+                    </svg>
+                </div>
+                <figcaption>
+                    <b>Ten rows, one thing that happened.</b> The worst value survives the merge
+                    rather than being averaged away — a knock correction of −5.62° averaged with its
+                    mild neighbours reports −5.44° and quietly understates how hard the engine was
+                    knocking.
+                </figcaption>
+            </figure>
+        </div>
+
+        <!-- Trick: absence of evidence -->
+        <div class="trick">
+            <div class="trick-head">
+                <h3>"Not plugged in" is not the same as "broken"</h3>
+            </div>
+
+            <div class="analogy">
+                <div class="analogy-tag">Like you're 5</div>
+                <p>
+                    If the thermometer in the empty spare room reads exactly the same number all week,
+                    the room isn't broken. Nobody put a thermometer there — you're reading a wire
+                    that isn't connected to anything.
+                </p>
+            </div>
+
+            <p>
+                On one real log, five inputs sat at a constant voltage because nothing was wired to
+                them. A rule that just looks for wrong values would confidently report
+                <strong>five dead sensors on a perfectly healthy car</strong>.
+            </p>
+
+            <p>
+                So before any diagnosis runs, every sensor is graded: working, missing entirely,
+                never changes, or reading physical nonsense. A rule that needs a sensor which isn't
+                trustworthy is <strong>skipped and reported as skipped</strong> — never guessed. That
+                skipped list is part of the output, because "I couldn't check this" and "I checked
+                this and it's fine" are completely different sentences.
+            </p>
+
+            <p>
+                The same instinct shows up in a subtler place. On one car the throttle reads
+                <code>0.0%</code> when closed; on another it reads <code>14.1%</code>. Hardcode either
+                number and the other car falls apart — with the wrong constant, one 44-minute drive
+                registered <em>no idling at all</em>, starving every idle-related check of evidence.
+                So the analyser learns where your throttle rests, from your log, every time.
+            </p>
+        </div>
+    </section>
+
+    <section>
+        <div class="section-head">
+            <p class="eyebrow">The output</p>
+            <h2>Two things it always tells you</h2>
+        </div>
+
+        <p>
+            Every finding carries two separate judgements, because they genuinely are different
+            questions. <strong>How bad is it?</strong> — shown with the same language as the warning
+            lamps on your dashboard. And separately, <strong>how sure are we?</strong> An overheat is
+            severe and certain. A misfire guessed from engine-speed wobble is moderate and shaky.
+            Collapsing those into one number is how diagnostic tools become untrustworthy.
+        </p>
+
+        <div class="lamps">
+            <div class="lamp">
+                <div class="lamp-name crit">Critical</div>
+                <p class="lamp-text">Stop driving and fix it. Sustained overheating lands here.</p>
+            </div>
+            <div class="lamp">
+                <div class="lamp-name warn">Needs attention</div>
+                <p class="lamp-text">Something is genuinely wrong and it will get worse.</p>
+            </div>
+            <div class="lamp">
+                <div class="lamp-name warn">Investigate</div>
+                <p class="lamp-text">Worth looking into. Most vacuum leaks and fuel trim faults sit here.</p>
+            </div>
+            <div class="lamp">
+                <div class="lamp-name info">Minor</div>
+                <p class="lamp-text">A lead, not a fault. Watch it over the next few drives.</p>
+            </div>
+            <div class="lamp">
+                <div class="lamp-name ok">Not checked</div>
+                <p class="lamp-text">A rule that couldn't run, and exactly why — a missing sensor, or too little of the right kind of driving.</p>
+            </div>
+        </div>
+
+        <p>
+            And every finding shows the numbers it reasoned from. A diagnosis a mechanic can't
+            verify is a diagnosis they won't trust.
+        </p>
+    </section>
+
+    <div class="closing">
+        <h2>The most important sentence</h2>
+        <p>
+            <strong>A quiet report does not mean the engine is healthy.</strong> It means nothing
+            matched the rules that were able to run.
+        </p>
+        <p>
+            That's why the "not checked" list is part of the answer rather than hidden away. Without
+            a knock sensor channel, "knock" is only ever "timing looks low for the conditions".
+            Without per-cylinder data, a misfire is only ever a wobble in engine speed. The tool is
+            built to say which of those it's doing — and log more channels and it will tell you more.
+        </p>
+    </div>
+
+    <div class="footer">
+        <a href="https://oshanrube.github.io/gauge.s-log-downloader/">Gauge.S Log Downloader</a>
+        · Analyse tab ·
+        <a href="https://github.com/oshanrube/gauge.s-log-downloader">source</a><br>
+        23 channels · 9 operating states · 14 diagnosis rules · 5 readings/second · two passes over the file<br>
+        Everything runs on the phone. A drive log is never uploaded.
+    </div>
+
+</div>
+</body>
+</html>
