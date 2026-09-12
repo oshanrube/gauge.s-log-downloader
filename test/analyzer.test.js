@@ -486,3 +486,166 @@ test('a mid-file freeze is not bridged into invented driving', () => {
     assert.ok(unaccounted > 40,
         `the frozen stretch must be left out of the state breakdown, only ${unaccounted.toFixed(1)}s was`);
 });
+
+// ── Ambient temperature ──────────────────────────────────────────────────
+
+test('a single dropped reading cannot set the ambient estimate', () => {
+    // The reference log's intake sensor dithers around 34 degC while the car
+    // sits still with a hot engine, then reads 13.5 for exactly one sample. A
+    // plain minimum took that reading as the outside air temperature.
+    const tracker = new CarDoctor.SustainedMinTracker(10_000);
+    for (let i = 0; i < 300; i++) {
+        // 5 Hz, steady at 30 degC, with one dropout a third of the way in.
+        tracker.observe(i * 200, i === 100 ? 5 : 30);
+    }
+    assert.strictEqual(tracker.value, 30, 'a one-sample dropout must not win');
+});
+
+test('the ambient estimate tracks a genuinely sustained low', () => {
+    const tracker = new CarDoctor.SustainedMinTracker(10_000);
+    for (let i = 0; i < 150; i++) tracker.observe(i * 200, 40);
+    // 30 s held at 18 degC is a real reading, not a glitch.
+    for (let i = 150; i < 300; i++) tracker.observe(i * 200, 18);
+    assert.strictEqual(tracker.value, 18);
+});
+
+test('a window is never spanned across a gap', () => {
+    const tracker = new CarDoctor.SustainedMinTracker(10_000);
+    for (let i = 0; i < 100; i++) tracker.observe(i * 200, 40);
+    tracker.reset();
+    // Only 2 s on the far side of the gap: too short to conclude anything.
+    for (let i = 0; i < 10; i++) tracker.observe(600_000 + i * 200, 5);
+    assert.strictEqual(tracker.value, 40, 'the short stretch after a gap must not count');
+});
+
+test('heat soak prefers a supplied outside air temperature over its own guess', () => {
+    // Intake sitting at 55 degC. Whether that is a fault depends entirely on
+    // how hot it is outside, which the log cannot know and a weather lookup can.
+    const log = () => new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, iat: 55 })
+        .build();
+
+    const cold = analyze(log(), { profile: CarDoctor.makeProfile({ ambientC: 10 }) });
+    const hot = analyze(log(), { profile: CarDoctor.makeProfile({ ambientC: 45 }) });
+
+    assert.ok(has(cold, 'air.intake_heatsoak'), '55 degC intake on a 10 degC day is heat soak');
+    assert.ok(!has(hot, 'air.intake_heatsoak'), '55 degC intake on a 45 degC day is just a hot day');
+
+    const f = finding(cold, 'air.intake_heatsoak');
+    assert.ok(f.evidence.some(e => e.label === 'Outside air'),
+        'the report must say the figure was measured, not inferred');
+});
+
+test('a dropped intake reading does not invent a heat soak finding', () => {
+    // End to end: the same defect the reference log carries.
+    const rows = new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, iat: 40 })
+        .build()
+        .split('\n');
+    // Intake air temp is column 8. Drop exactly one sample to 5 degC.
+    const cells = rows[600].split(',');
+    cells[8] = '5.00';
+    rows[600] = cells.join(',');
+
+    const report = analyze(rows.join('\n'));
+    assert.ok(!has(report, 'air.intake_heatsoak'),
+        'one bad sample must not become the outside air temperature');
+    assert.ok(report.summary.timeline.ambientEstimateC > 30,
+        `ambient should track the real level, got ${report.summary.timeline.ambientEstimateC}`);
+});
+
+// ── Learned load scale ───────────────────────────────────────────────────
+
+test('full load is learned from the drive rather than assumed', () => {
+    // A big engine that pulls to 900 mg/str. The generic 400 would call
+    // two-thirds of its range a full-load pull.
+    const log = new SyntheticLog()
+        .phase({ seconds: 300, rpm: 2000, load: 250, tps: 20, speed: 60, coolant: 92 })
+        .phase({ seconds: 60, rpm: 4000, load: 900, tps: 75, speed: 120, coolant: 95 })
+        .phase({ seconds: 300, rpm: 2000, load: 250, tps: 20, speed: 60, coolant: 92 })
+        .build();
+
+    const scale = CarDoctor.calibrateLoadScale(log, CarDoctor.DEFAULT_PROFILE);
+    assert.ok(scale, 'a drive with real full-throttle running must calibrate');
+    assert.ok(Math.abs(scale.highLoadThreshold - 900) < 100,
+        `expected about 900 mg/str, got ${scale.highLoadThreshold}`);
+
+    const report = analyze(log);
+    assert.strictEqual(report.overview.loadScaleCalibrated, true);
+    assert.ok(report.overview.highLoadThreshold > 700);
+});
+
+test('a drive with no full-throttle running keeps the generic scale', () => {
+    // Gentle pottering proves nothing about what this engine can make, so the
+    // default must stand rather than be set by whatever the drive happened to do.
+    const log = new SyntheticLog()
+        .phase({ seconds: 600, rpm: 1800, load: 150, tps: 15, speed: 50, coolant: 92 })
+        .build();
+
+    assert.strictEqual(CarDoctor.calibrateLoadScale(log, CarDoctor.DEFAULT_PROFILE), null);
+    const report = analyze(log);
+    assert.strictEqual(report.overview.loadScaleCalibrated, false);
+    assert.strictEqual(report.overview.highLoadThreshold, CarDoctor.DEFAULT_PROFILE.highLoadThreshold);
+});
+
+test('a log without a throttle channel cannot calibrate, and says so', () => {
+    const lines = ['Timestamp (ms),engine speed (RPM),engine load (mg/str),coolant temp (C)'];
+    for (let i = 0; i < 4000; i++) {
+        lines.push(`${i * 66},${2000 + i % 11},${300 + i % 23},${92 + (i % 5) * 0.25}`);
+    }
+    const log = lines.join('\n');
+    assert.strictEqual(CarDoctor.calibrateLoadScale(log, CarDoctor.DEFAULT_PROFILE), null,
+        'no throttle channel means no evidence of full throttle');
+    assert.strictEqual(analyze(log).overview.loadScaleCalibrated, false);
+});
+
+test('one load spike cannot set the scale', () => {
+    // The same failure the ambient estimate had: a quantile, not a maximum.
+    const rows = new SyntheticLog()
+        .phase({ seconds: 200, rpm: 2000, load: 250, tps: 20, speed: 60, coolant: 92 })
+        .phase({ seconds: 60, rpm: 4000, load: 500, tps: 75, speed: 120, coolant: 95 })
+        .build()
+        .split('\n');
+    // Engine load is column 2. One absurd reading while at full throttle.
+    const spikeRow = rows.length - 10;
+    const cells = rows[spikeRow].split(',');
+    cells[2] = '2400.00';
+    rows[spikeRow] = cells.join(',');
+
+    const scale = CarDoctor.calibrateLoadScale(rows.join('\n'), CarDoctor.DEFAULT_PROFILE);
+    assert.ok(scale.highLoadThreshold < 700,
+        `one spike must not drag the scale up, got ${scale.highLoadThreshold}`);
+});
+
+// ── The shared vehicle record ────────────────────────────────────────────
+
+test('the vehicle record carries outside air into the analysis', () => {
+    // One record, two consumers: prose for the AI hand-off, numbers for here.
+    const vehicle = { chassis: 'E36', engine: 'M52B28', ecu: 'MS41', location: 'Colombo', ambient: '31' };
+    const profile = CarDoctor.profileFromVehicle(vehicle);
+    assert.strictEqual(profile.ambientC, 31);
+    assert.strictEqual(profile.name, 'E36 M52B28');
+
+    // The figure has to survive the trip into the pipeline and be used as a
+    // measurement, which the report states outright.
+    const log = new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, iat: 62 })
+        .build();
+
+    const stated = finding(analyze(log, { profile }), 'air.intake_heatsoak');
+    assert.ok(stated, '62 degC intake on a stated 31 degC day is a 31 degC rise');
+    assert.ok(stated.evidence.some(e => e.label === 'Outside air' && e.value.includes('31.0')),
+        'the report must show it used the stated figure, not its own guess');
+
+    // A hot enough day explains the same intake temperature away entirely.
+    const hotDay = Object.assign({}, vehicle, { ambient: '45' });
+    assert.ok(!has(analyze(log, { profile: CarDoctor.profileFromVehicle(hotDay) }), 'air.intake_heatsoak'),
+        '62 degC intake on a 45 degC day is just a hot day');
+});
+
+test('junk in the ambient box is ignored rather than believed', () => {
+    for (const ambient of ['', '  ', 'warm', '999', '-200']) {
+        assert.strictEqual(CarDoctor.profileFromVehicle({ ambient }).ambientC, null,
+            `"${ambient}" must not become a temperature`);
+    }
+});

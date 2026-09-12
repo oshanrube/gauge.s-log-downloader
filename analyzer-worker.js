@@ -12,6 +12,8 @@ importScripts('analyzer.js');
 
 self.onmessage = event => {
     const text = event.data && event.data.text;
+    // Thresholds from the shared vehicle record, when the app had any.
+    const profile = (event.data && event.data.profile) || undefined;
     if (typeof text !== 'string') {
         self.postMessage({ type: 'error', message: 'no log text supplied' });
         return;
@@ -22,6 +24,7 @@ self.onmessage = event => {
         // can usefully show.
         let lastPercent = -1;
         const report = self.CarDoctor.analyze(text, {
+            profile,
             onProgress: fraction => {
                 const percent = Math.round(fraction * 100);
                 if (percent === lastPercent) return;

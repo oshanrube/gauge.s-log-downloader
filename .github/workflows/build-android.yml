@@ -8,20 +8,14 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - 'claude/**'
-    paths:
-      - 'index.html'
-      - 'analyzer.js'
-      - 'analyzer-worker.js'
-      - 'test/**'
-      - 'manifest.json'
-      - 'sw.js'
-      - 'icon-*.png'
-      - 'android/**'
-      - 'scripts/**'
-      - 'package*.json'
-      - 'capacitor.config.json'
-      - '.github/workflows/build-android.yml'
+
+# Two merges landing together would otherwise race to push the version bump.
+# Queue rather than cancel: a cancelled run is a release that never happened.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -32,19 +26,53 @@ jobs:
       contents: write
 
     steps:
+      # Full history: a release merge rebases its version bump onto whatever
+      # landed while it built, which a shallow clone cannot do.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # Cached because every dependency was being fetched from Google and Maven
+      # on every run, and a merge that cannot reach them is now a release that
+      # silently never happens rather than a dispatch to retry. npm was already
+      # cached; Gradle was the one left exposed.
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
+          cache: gradle
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
+
+      # Merging is the act of releasing, so the patch moves on its own rather
+      # than relying on whoever opened the pull request to remember. Done before
+      # the build so the APK, the service worker cache key and the release all
+      # carry the same number.
+      - name: Work out the version
+        id: version
+        env:
+          IS_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          current=$(node -p "require('./package.json').version")
+
+          if [ "$IS_MAIN" != "true" ]; then
+            echo "Not a merge to main - building $current without releasing."
+            echo "version=$current" >> "$GITHUB_OUTPUT"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          next=$(node scripts/bump-version.mjs --write)
+
+          echo "Releasing $current -> $next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -147,13 +175,46 @@ jobs:
       # Actions artifacts need a GitHub login and arrive as a zip, which is
       # painful on a phone. A release asset is a direct tap-to-install link.
       # Manual runs only, so ordinary pushes don't publish releases.
-      - name: Attach APK to a release
-        if: github.event_name == 'workflow_dispatch'
+      # The bump has to be on main before the tag can point at it, and it must
+      # not set this workflow off again. A push made with GITHUB_TOKEN does not
+      # trigger workflows, and [skip ci] says so for any reader.
+      - name: Put the version bump on main
+        id: bump
+        if: steps.version.outputs.bumped == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          version=$(node -p "require('./package.json').version")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json sw.js index.html
+          git commit -m "Release v${VERSION} [skip ci]"
+
+          # Another merge may have landed while this built; rebase onto it
+          # rather than failing a release that is otherwise ready to go.
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not push the version bump to main"
+          exit 1
+
+      - name: Attach APK to a release
+        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          # A manual run republishes an existing release on purpose. An
+          # automatic one must never overwrite: the version has just been
+          # bumped, so a tag that already exists means something is wrong.
+          ALLOW_CLOBBER: ${{ github.event_name == 'workflow_dispatch' }}
+          TARGET_SHA: ${{ steps.bump.outputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          version="$VERSION"
           tag="v${version}"
 
           # Two assets from one APK: a versioned name so downloads are
@@ -173,6 +234,10 @@ jobs:
           fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
+            if [ "$ALLOW_CLOBBER" != "true" ]; then
+              echo "::error::$tag already exists, and an automatic release must not overwrite one."
+              exit 1
+            fi
             echo "Release $tag exists — replacing the assets."
             gh release upload "$tag" "${assets[@]}" --clobber
             # Older runs published this as a prerelease, which /releases/latest
@@ -181,7 +246,7 @@ jobs:
           else
             echo "Creating release $tag."
             gh release create "$tag" "${assets[@]}" \
-              --target "$GITHUB_SHA" \
+              --target "$TARGET_SHA" \
               --title "Gauge.S Downloader $tag — Android" \
               --latest \
               --notes "Android build of the Gauge.S log downloader.
