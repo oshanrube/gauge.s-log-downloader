@@ -134,6 +134,122 @@
             color: #34d399;
         }
 
+        /* The address is a combobox: type a new one, or pick a previously
+           used one from the history that hangs below the field. */
+        .addr-field {
+            position: relative;
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .addr-toggle {
+            flex-shrink: 0;
+            width: 26px;
+            height: 26px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: 1px solid #2d3154;
+            border-radius: 6px;
+            color: #a5b4fc;
+            cursor: pointer;
+        }
+
+        .addr-toggle:hover {
+            border-color: #6366f1;
+            color: #c7d2fe;
+        }
+
+        .addr-toggle svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+            transition: transform 0.15s ease;
+        }
+
+        .addr-toggle[aria-expanded="true"] svg {
+            transform: rotate(180deg);
+        }
+
+        .addr-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            right: 0;
+            margin: 0;
+            padding: 4px;
+            list-style: none;
+            background: #12152a;
+            border: 1px solid #2d3154;
+            border-radius: 10px;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+            max-height: 220px;
+            overflow-y: auto;
+            z-index: 50;
+        }
+
+        .addr-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-radius: 6px;
+        }
+
+        .addr-item.selected {
+            background: #1b2044;
+        }
+
+        .addr-pick {
+            flex: 1;
+            min-width: 0;
+            text-align: left;
+            background: transparent;
+            border: none;
+            color: #a5b4fc;
+            font: inherit;
+            padding: 9px 10px;
+            cursor: pointer;
+            border-radius: 6px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .addr-pick:hover {
+            background: #232a55;
+            color: #c7d2fe;
+        }
+
+        .addr-remove {
+            flex-shrink: 0;
+            width: 26px;
+            height: 26px;
+            margin-right: 4px;
+            padding: 0;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            color: #64748b;
+            font: inherit;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .addr-remove:hover {
+            background: #2a1b2b;
+            color: #f87171;
+        }
+
+        .addr-empty {
+            padding: 9px 10px;
+            color: #64748b;
+        }
+
         .options-box {
             margin-bottom: 20px;
         }
@@ -1335,8 +1451,15 @@
 
         <div class="panel active" id="panelDownload">
         <div class="endpoint-box">
-            <label for="deviceAddress">Device&nbsp;</label><span class="proto">http://</span><input id="deviceAddress"
-                spellcheck="false" autocomplete="off" placeholder="192.168.4.1" />
+            <label for="deviceAddress">Device&nbsp;</label><span class="proto">http://</span><div class="addr-field">
+                <input id="deviceAddress" spellcheck="false" autocomplete="off" placeholder="192.168.4.1"
+                    role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="addressMenu" />
+                <button type="button" id="addressToggle" class="addr-toggle" aria-expanded="false"
+                    aria-controls="addressMenu" aria-label="Previously used addresses" title="Previously used addresses">
+                    <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z" /></svg>
+                </button>
+                <ul class="addr-menu" id="addressMenu" role="listbox" aria-label="Previously used addresses" hidden></ul>
+            </div>
         </div>
 
         <a class="apk-banner" id="apkBanner"
@@ -1513,7 +1636,7 @@
 
     <script>
         // Keep in sync with APP_VERSION in sw.js
-        const APP_VERSION = '1.24.0';
+        const APP_VERSION = '1.25.0';
         const DEFAULT_DEVICE = '192.168.4.1';
 
         // ── Device address resolution ────────────────────────────────────
@@ -1527,23 +1650,141 @@
         }
 
         const addrInput = document.getElementById('deviceAddress');
+        const addrToggle = document.getElementById('addressToggle');
+        const addrMenu = document.getElementById('addressMenu');
+
+        // The same device answers on a different IP depending on where it is
+        // plugged in (its own AP, a workshop router, a tethered phone), but
+        // those addresses repeat trip after trip — so every address that is
+        // actually used is kept, most recent first, and offered in a dropdown
+        // instead of being retyped.
+        const ADDRESS_KEY = 'deviceAddress';          // last used — also the field's initial value
+        const ADDRESS_HISTORY_KEY = 'deviceAddressHistory';
+        const MAX_REMEMBERED_ADDRESSES = 8;
+
+        function loadAddressHistory() {
+            const saved = loadJson(ADDRESS_HISTORY_KEY, null);
+            if (Array.isArray(saved)) {
+                return saved
+                    .filter(a => typeof a === 'string')
+                    .map(a => a.trim())
+                    .filter(Boolean)
+                    .slice(0, MAX_REMEMBERED_ADDRESSES);
+            }
+            // First run after the upgrade: seed the list from the single
+            // address earlier versions remembered.
+            const last = (localStorage.getItem(ADDRESS_KEY) || '').trim();
+            return last ? [last] : [];
+        }
+
+        function saveAddressHistory(list) {
+            localStorage.setItem(ADDRESS_HISTORY_KEY,
+                JSON.stringify(list.slice(0, MAX_REMEMBERED_ADDRESSES)));
+        }
 
         function rememberAddress() {
             if (isServedFromDevice()) return;
             const value = addrInput.value.trim();
-            if (value) localStorage.setItem('deviceAddress', value);
+            if (!value) return;
+            localStorage.setItem(ADDRESS_KEY, value);
+            const history = loadAddressHistory().filter(a => a !== value);
+            history.unshift(value);
+            saveAddressHistory(history);
+            renderAddressMenu();
+        }
+
+        function forgetAddress(value) {
+            saveAddressHistory(loadAddressHistory().filter(a => a !== value));
+            renderAddressMenu();
+        }
+
+        function renderAddressMenu() {
+            const history = loadAddressHistory();
+            const current = addrInput.value.trim();
+            addrMenu.innerHTML = '';
+
+            if (!history.length) {
+                const li = document.createElement('li');
+                li.className = 'addr-empty';
+                li.textContent = 'No saved addresses yet';
+                addrMenu.appendChild(li);
+                return;
+            }
+
+            for (const addr of history) {
+                const li = document.createElement('li');
+                li.className = 'addr-item' + (addr === current ? ' selected' : '');
+                li.setAttribute('role', 'option');
+                li.setAttribute('aria-selected', String(addr === current));
+
+                const pick = document.createElement('button');
+                pick.type = 'button';
+                pick.className = 'addr-pick';
+                pick.textContent = addr;
+                pick.addEventListener('click', () => {
+                    addrInput.value = addr;
+                    rememberAddress();
+                    closeAddressMenu();
+                    addrInput.focus();
+                });
+
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'addr-remove';
+                remove.textContent = '×';
+                remove.title = `Forget ${addr}`;
+                remove.setAttribute('aria-label', `Forget ${addr}`);
+                remove.addEventListener('click', e => {
+                    // Re-rendering detaches this button mid-dispatch, which
+                    // would make the outside-click handler below mistake the
+                    // event for a click outside the field and close the list.
+                    e.stopPropagation();
+                    forgetAddress(addr);
+                });
+
+                li.append(pick, remove);
+                addrMenu.appendChild(li);
+            }
+        }
+
+        function openAddressMenu() {
+            renderAddressMenu();
+            addrMenu.hidden = false;
+            addrToggle.setAttribute('aria-expanded', 'true');
+            addrInput.setAttribute('aria-expanded', 'true');
+        }
+
+        function closeAddressMenu() {
+            addrMenu.hidden = true;
+            addrToggle.setAttribute('aria-expanded', 'false');
+            addrInput.setAttribute('aria-expanded', 'false');
         }
 
         if (isServedFromDevice()) {
             addrInput.value = location.host;
             addrInput.disabled = true;
             addrInput.title = 'Served from the device — same-origin mode';
+            addrToggle.remove();
+            addrMenu.remove();
         } else {
-            addrInput.value = localStorage.getItem('deviceAddress') || DEFAULT_DEVICE;
+            addrInput.value = localStorage.getItem(ADDRESS_KEY) || DEFAULT_DEVICE;
             // `change` alone misses an address that is typed and then used
             // straight away without the field losing focus, so the value is
             // also saved when a run starts (see startDownload).
             addrInput.addEventListener('change', rememberAddress);
+
+            addrToggle.addEventListener('click', () => {
+                if (addrMenu.hidden) openAddressMenu();
+                else closeAddressMenu();
+            });
+
+            // Clicking anywhere else — or Escape — puts the list away.
+            document.addEventListener('click', e => {
+                if (!addrMenu.hidden && !e.target.closest('.addr-field')) closeAddressMenu();
+            });
+            document.addEventListener('keydown', e => {
+                if (e.key === 'Escape' && !addrMenu.hidden) closeAddressMenu();
+            });
         }
 
         // '' means same-origin (relative URLs)

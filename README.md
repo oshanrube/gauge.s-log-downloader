@@ -79,6 +79,16 @@ You only need internet for this step. Do it once before heading to the field.
    - Download one merged CSV per group to your phone
 5. Watch the **Activity Log** on screen — green ✓ lines mean success.
 
+> **Device on a different IP?** The **Device** field at the top is a dropdown as
+> well as a text box. Type a new address once and it is remembered; after that,
+> tap the **▾** button and pick it from the list — handy when the same Gauge.S
+> answers on `192.168.4.1` on its own Wi-Fi but on another address once it is
+> joined to a workshop router. The eight most recently used addresses are kept,
+> most recent first, and the **×** next to an entry forgets it.
+>
+> The field is locked when you open the app from the device itself
+> (`http://<ip>/index.html`) — there is nothing to choose in that case.
+
 ---
 
 ### Step 4 — Find your downloaded files
