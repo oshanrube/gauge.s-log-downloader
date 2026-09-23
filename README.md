@@ -99,8 +99,14 @@ You only need internet for this step. Do it once before heading to the field.
 | **Android** | Files app → **Downloads** |
 
 The merged files will be named like:
-- `Gauge.S.csv` — all numbered session logs combined
-- `Gauge.S_26-02-28_06.csv` — timestamped session logs combined
+- `Gauge.S_26-09-23_14-32.csv` — numbered session logs combined, stamped with
+  the date and hour-minute of the download
+- `Gauge.S_26-02-28_14-32.csv` — one day's dated session logs combined, stamped
+  with the hour-minute of the download
+
+The hour-minute keeps a second download on the same day from replacing the
+first. If numbered and dated logs land on the same date and time, the second
+file gets a `-2` suffix instead of being merged into the first.
 
 ---
 
