@@ -1,0 +1,492 @@
+{
+// MS43 430069 ms4x extended-load binary - DS2 telegram
+// Generated from Rustle333/Siemens-MS43, MS43 logger_METRIC_EN_v1.0.0 - ext load.xml (RomRaider, telegram by ba114).
+// Telegram mode: Gauge.S sets up the parameter list itself (DS2 0x0B 0x01, 47 params, 241-byte frame)
+// and then polls 0x0B 0x00; the ECU answers with 80 data bytes (84-byte frame) per poll.
+// Each parameter address is <type><32-bit RAM address>: type 0x00 = byte, 0x01 = word, 0x02 = ADC procedure.
+// Every parameter below is polled, hidden or not - delete the ones you do not need for a faster refresh rate.
+// ADC procedures (type 0x02) are kept last: RomRaider reads them as 2-byte 10-bit values on MS43, so a
+// firmware that sizes them differently can only upset the entries after Pre-Cat O2 1, never the RAM values.
+	"canSpeed": 500,
+	"address": ["0x12", "0x05", "0x0B", "0x00", "0x1C"],
+	"ecuparam": [
+		{
+			"header": "Engine Speed",
+			"unit": "RPM",
+			"address": "0x010000E0E4", // RomRaider P8
+			"max": 7000,
+			"min": 0,
+			"dec": 0,
+			"flashPoint": 6500
+		},
+		{
+			"header": "Vehicle Speed",
+			"unit": "km/h",
+			"address": "0x000004047F", // RomRaider P9
+			"max": 260,
+			"min": 0,
+			"dec": 0
+		},
+		{
+			"header": "Gear",
+			"unit": "#",
+			"address": "0x00000401AC", // RomRaider E218
+			"max": 6,
+			"min": 0,
+			"dec": 0
+		},
+		{
+			"header": "Accelerator Pedal",
+			"unit": "%",
+			"address": "0x010000E34A", // RomRaider P96
+			"mul": 0.0018310547,
+			"max": 100,
+			"min": 0,
+			"dec": 1
+		},
+		{
+			"header": "TPS",
+			"unit": "%",
+			"address": "0x010000E14C", // RomRaider P13
+			"mul": 0.0073,
+			"max": 100,
+			"min": 0,
+			"dec": 1
+		},
+		{
+			"header": "Mass Airflow",
+			"unit": "kg/h",
+			"address": "0x010000E32E", // RomRaider P12
+			"mul": 0.25,
+			"max": 1000,
+			"min": 0,
+			"dec": 1
+		},
+		{
+			"header": "Engine Load",
+			"unit": "mg/str",
+			"address": "0x010000E330", // RomRaider E2
+			"mul": 0.04239,
+			"max": 1000,
+			"min": 0,
+			"dec": 1
+		},
+		{
+			"header": "Filtered Load",
+			"unit": "mg/str",
+			"address": "0x010000E33A", // RomRaider E233
+			"mul": 0.04239,
+			"max": 1000,
+			"min": 0,
+			"dec": 1,
+			"hidden": true
+		},
+		{
+			"header": "MAP",
+			"unit": "mbar",
+			"address": "0x0100040FD6", // RomRaider E234
+			"mul": 0.082921489,
+			"max": 1100,
+			"min": 0,
+			"dec": 0
+		},
+		{
+			"header": "Ambient Pressure",
+			"unit": "mbar",
+			"address": "0x01000404C8", // RomRaider P24
+			"mul": 0.08291626,
+			"max": 1100,
+			"min": 700,
+			"dec": 0,
+			"hidden": true
+		},
+		{
+			"header": "Intake Air Temp",
+			"unit": "°C",
+			"address": "0x0000040432", // RomRaider P11
+			"mul": 0.747,
+			"add": -48,
+			"max": 80,
+			"min": -20,
+			"dec": 0
+		},
+		{
+			"header": "Coolant Temp",
+			"unit": "°C",
+			"address": "0x0000040433", // RomRaider P2
+			"mul": 0.75,
+			"add": -48,
+			"max": 120,
+			"min": 40,
+			"dec": 0
+		},
+		{
+			"header": "Oil Temp",
+			"unit": "°C",
+			"address": "0x000004042F", // RomRaider P4
+			"mul": 0.79607843,
+			"add": -48,
+			"max": 140,
+			"min": 40,
+			"dec": 0
+		},
+		{
+			"header": "Ignition Angle",
+			"unit": "°CRK",
+			"address": "0x000000FBAB", // RomRaider P10
+			"mul": -0.375,
+			"add": 72,
+			"max": 50,
+			"min": -20,
+			"dec": 1
+		},
+		{
+			"header": "Ignition Angle Cyl 2",
+			"unit": "°CRK",
+			"address": "0x000000FBAF", // RomRaider P112
+			"mul": -0.375,
+			"add": 72,
+			"max": 50,
+			"min": -20,
+			"dec": 1,
+			"hidden": true
+		},
+		{
+			"header": "Ignition Angle Cyl 3",
+			"unit": "°CRK",
+			"address": "0x000000FBAD", // RomRaider P113
+			"mul": -0.375,
+			"add": 72,
+			"max": 50,
+			"min": -20,
+			"dec": 1,
+			"hidden": true
+		},
+		{
+			"header": "Ignition Angle Cyl 4",
+			"unit": "°CRK",
+			"address": "0x000000FBB0", // RomRaider P114
+			"mul": -0.375,
+			"add": 72,
+			"max": 50,
+			"min": -20,
+			"dec": 1,
+			"hidden": true
+		},
+		{
+			"header": "Ignition Angle Cyl 5",
+			"unit": "°CRK",
+			"address": "0x000000FBAC", // RomRaider P115
+			"mul": -0.375,
+			"add": 72,
+			"max": 50,
+			"min": -20,
+			"dec": 1,
+			"hidden": true
+		},
+		{
+			"header": "Ignition Angle Cyl 6",
+			"unit": "°CRK",
+			"address": "0x000000FBAE", // RomRaider P116
+			"mul": -0.375,
+			"add": 72,
+			"max": 50,
+			"min": -20,
+			"dec": 1,
+			"hidden": true
+		},
+		{
+			"header": "Knock Correction",
+			"unit": "°CRK",
+			"address": "0x000000FB6E", // RomRaider E27
+			"mul": 0.375,
+			"add": -48,
+			"max": 2,
+			"min": -10,
+			"dec": 2,
+			"resetTime": 0
+		},
+		{
+			"header": "Fuel Inj",
+			"unit": "ms",
+			"address": "0x0100040DAA", // RomRaider P99
+			"mul": 0.0053333333,
+			"max": 20,
+			"min": 0,
+			"dec": 2
+		},
+		{
+			"header": "Lambda Int 1",
+			"unit": "%",
+			"address": "0x0100040C72", // RomRaider E13
+			"mul": 0.0015258789,
+			"add": -50,
+			"max": 25,
+			"min": -25,
+			"dec": 1,
+			"resetTime": 0
+		},
+		{
+			"header": "Lambda Int 2",
+			"unit": "%",
+			"address": "0x0100040DE0", // RomRaider E14
+			"mul": 0.0015258789,
+			"add": -50,
+			"max": 25,
+			"min": -25,
+			"dec": 1,
+			"resetTime": 0
+		},
+		{
+			"header": "LTFT 1",
+			"unit": "%",
+			"address": "0x0100040C82", // RomRaider E21
+			"mul": 0.0015258789,
+			"add": -50,
+			"max": 25,
+			"min": -25,
+			"dec": 1
+		},
+		{
+			"header": "LTFT 2",
+			"unit": "%",
+			"address": "0x0100040DF0", // RomRaider E22
+			"mul": 0.0015258789,
+			"add": -50,
+			"max": 25,
+			"min": -25,
+			"dec": 1
+		},
+		{
+			"header": "LTFT Add 1",
+			"unit": "ms",
+			"address": "0x0100040C7C", // RomRaider E19
+			"mul": 0.004,
+			"add": -131.072,
+			"max": 1,
+			"min": -1,
+			"dec": 3,
+			"hidden": true
+		},
+		{
+			"header": "LTFT Add 2",
+			"unit": "ms",
+			"address": "0x0100040DEA", // RomRaider E20
+			"mul": 0.004,
+			"add": -131.072,
+			"max": 1,
+			"min": -1,
+			"dec": 3,
+			"hidden": true
+		},
+		{
+			"header": "RON Adaption",
+			"unit": "%",
+			"address": "0x010000E304", // RomRaider E24
+			"mul": 0.0015258789,
+			"max": 100,
+			"min": 0,
+			"dec": 1,
+			"hidden": true
+		},
+		{
+			"header": "Vanos Intake",
+			"unit": "°CRK",
+			"address": "0x0000040212", // RomRaider E11
+			"mul": 0.3745,
+			"add": 60,
+			"max": 130,
+			"min": 70,
+			"dec": 1
+		},
+		{
+			"header": "Vanos Exhaust",
+			"unit": "°CRK",
+			"address": "0x0000040AE0", // RomRaider E12
+			"mul": -0.3745,
+			"add": -60,
+			"max": -80,
+			"min": -110,
+			"dec": 1
+		},
+		{
+			"header": "DMTL Volts",
+			"unit": "V",
+			"address": "0x010000E556", // RomRaider E131
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "Fuel Cap Volts",
+			"unit": "V",
+			"address": "0x010000E558", // RomRaider E132
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "SAF Volts",
+			"unit": "V",
+			"address": "0x010000E530", // RomRaider E133
+			"expr": "(x & 1023) * 0.00488",
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "IAT Sensor Volts",
+			"unit": "V",
+			"address": "0x010000E540", // RomRaider E100
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "ECT Sensor Volts",
+			"unit": "V",
+			"address": "0x010000E544", // RomRaider E103
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "Oil Temp Sensor Volts",
+			"unit": "V",
+			"address": "0x010000E542", // RomRaider E105
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "Pre-Cat O2 1",
+			"unit": "V",
+			"address": "0x0200000001", // RomRaider E1229
+			"length": 2,
+			"mul": 0.00488,
+			"max": 1,
+			"min": 0,
+			"dec": 2
+		},
+		{
+			"header": "Pre-Cat O2 2",
+			"unit": "V",
+			"address": "0x0200000002", // RomRaider E1330
+			"length": 2,
+			"mul": 0.00488,
+			"max": 1,
+			"min": 0,
+			"dec": 2
+		},
+		{
+			"header": "Post-Cat O2 1",
+			"unit": "V",
+			"address": "0x0200000019", // RomRaider E129
+			"length": 2,
+			"mul": 0.00488,
+			"max": 1,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "Post-Cat O2 2",
+			"unit": "V",
+			"address": "0x020000001A", // RomRaider E130
+			"length": 2,
+			"mul": 0.00488,
+			"max": 1,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "MAF Volts",
+			"unit": "V",
+			"address": "0x0200000006", // RomRaider P18
+			"length": 2,
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "Battery Voltage",
+			"alias": "Battery",
+			"unit": "V",
+			"address": "0x0200000007", // RomRaider P17
+			"length": 2,
+			"mul": 0.025,
+			"max": 16,
+			"min": 10,
+			"dec": 1
+		},
+		{
+			"header": "Pedal Plausibility Volts",
+			"unit": "V",
+			"address": "0x0200000009", // RomRaider E109
+			"length": 2,
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "TPS Volts",
+			"unit": "V",
+			"address": "0x020000000A", // RomRaider P19
+			"length": 2,
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "TPS Plausibility Volts",
+			"unit": "V",
+			"address": "0x020000000B", // RomRaider P110
+			"length": 2,
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "Knock Sensor 1",
+			"unit": "V",
+			"address": "0x0200000017", // RomRaider E127
+			"length": 2,
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		},
+		{
+			"header": "Knock Sensor 2",
+			"unit": "V",
+			"address": "0x0200000018", // RomRaider E128
+			"length": 2,
+			"mul": 0.00488,
+			"max": 5,
+			"min": 0,
+			"dec": 2,
+			"hidden": true
+		}
+	]
+}
