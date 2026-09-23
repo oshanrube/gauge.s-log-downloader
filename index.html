@@ -2343,8 +2343,9 @@
         function queueForUpload(entry) {
             if (!IS_NATIVE) return; // web keeps no copy to upload later
             const queue = driveState.queue;
-            // Re-running a merge overwrites the same output file, so replace
-            // rather than queue a duplicate.
+            // Output names carry the run's hour and minute, so this only
+            // matches a file being written again — replace rather than queue
+            // a duplicate.
             driveState.queue = [...queue.filter(q => q.name !== entry.name), entry];
         }
 
@@ -3530,8 +3531,23 @@
             }
         }
 
+        /** Two-digit date and time pieces of `now`, in local time. */
+        function stampParts(now) {
+            const pad = n => String(n).padStart(2, '0');
+            return {
+                date: `${String(now.getFullYear()).slice(-2)}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+                time: `${pad(now.getHours())}-${pad(now.getMinutes())}`,
+            };
+        }
+
+        /** Whether a device filename carries its own YY-MM-DD date. */
+        function isDatedLog(name) {
+            return /[_-]\d{2}-\d{2}-\d{2}/.test(name);
+        }
+
         /**
-         * Derive the merged output filename from a member filename.
+         * Derive the merged group name from a member filename, before the run
+         * time is added (see outputNames).
          *
          * Rule: drop the trailing part number just before ".csv", whether or
          * not a separator precedes it. Everything left sharing a name belongs
@@ -3544,8 +3560,11 @@
          *
          * The separator was required until v1.17.0, so names like gauge.s51.csv
          * kept their number, gave every file a unique key, and nothing merged.
+         *
+         * `now` is the run's start, so every undated file in one run gets the
+         * same date even if the run crosses midnight.
          */
-        function groupKey(name) {
+        function groupKey(name, now = new Date()) {
             // The date is checked before anything is stripped: on a name that
             // is already just a date, the part-number rule would otherwise eat
             // "-28" as the part number and destroy the date.
@@ -3553,17 +3572,52 @@
             if (dated) return `${dated[1]}.csv`;
 
             // Undated: drop the trailing digits, with an optional - or _ in
-            // front of them, and stamp today's date on instead.
+            // front of them, and stamp the run's date on instead.
             const base = name.replace(/[-_]?\d+\.csv$/i, '.csv');
+            return base.replace(/\.csv$/i, `_${stampParts(now).date}.csv`);
+        }
 
-            // No date found — append today's date as _YY-MM-DD before .csv
-            const now = new Date();
-            const yy = String(now.getFullYear()).slice(-2);
-            const mm = String(now.getMonth() + 1).padStart(2, '0');
-            const dd = String(now.getDate()).padStart(2, '0');
-            const dateSuffix = `_${yy}-${mm}-${dd}`;
+        /**
+         * Groups device files and names each merged output, suffixed with the
+         * run's hour and minute:
+         *
+         *   Gauge.S-1.csv, Gauge.S-2.csv  → Gauge.S_26-09-23_14-32.csv
+         *   Gauge.S_26-02-28_06-11.csv    → Gauge.S_26-02-28_14-32.csv
+         *
+         * Without the time, a second run on the same day produced the same
+         * name and replaced the first run's file on the phone, and Drive
+         * collected two files of one name that the app could only tell apart
+         * by id.
+         *
+         * Dated and numbered files are kept apart even when they resolve to
+         * the same date: numbered parts carry no clock, and merging them onto
+         * a dated recording would stitch separate drives into one timeline.
+         * Should both land on one name, the later group takes a -2, -3… so
+         * neither overwrites the other.
+         *
+         * @returns {Map<string, string[]>} output name → member names, sorted
+         */
+        function outputNames(names, now = new Date()) {
+            const byGroup = new Map();
+            for (const name of names) {
+                const key = groupKey(name, now);
+                const group = `${isDatedLog(name) ? 'dated' : 'numbered'}\n${key}`;
+                if (!byGroup.has(group)) byGroup.set(group, { key, members: [] });
+                byGroup.get(group).members.push(name);
+            }
 
-            return base.replace(/\.csv$/i, `${dateSuffix}.csv`);
+            const { time } = stampParts(now);
+            const groups = new Map();
+            for (const { key, members } of byGroup.values()) {
+                const stem = key.replace(/\.csv$/i, `_${time}`);
+                let out = `${stem}.csv`;
+                for (let n = 2; groups.has(out); n++) out = `${stem}-${n}.csv`;
+                // The device's listing order is not guaranteed, and a plain
+                // string sort puts -10 straight after -1, which would
+                // interleave the rows.
+                groups.set(out, members.sort(comparePartNames));
+            }
+            return groups;
         }
 
         /**
@@ -3912,15 +3966,7 @@
 
             // ── Step 2: Group files by output name ────────────────────────────────────
             // Map: outputName → [ ...member filenames in order ]
-            const groups = new Map();
-            for (const f of files) {
-                const key = groupKey(f.name);
-                if (!groups.has(key)) groups.set(key, []);
-                groups.get(key).push(f.name);
-            }
-            // The device's listing order is not guaranteed, and a plain string
-            // sort puts -10 straight after -1, which would interleave the rows.
-            for (const members of groups.values()) members.sort(comparePartNames);
+            const groups = outputNames(files.map(f => f.name));
 
             if (files.length === 0) {
                 log(`No log files on the device`, 'success');
@@ -4016,7 +4062,7 @@
                     // may be from different sessions. Nothing in the data can
                     // tell them apart — say so rather than presenting an
                     // invented timeline as fact.
-                    const undated = !/[_-]\d{2}-\d{2}-\d{2}/.test(members[0]);
+                    const undated = !isDatedLog(members[0]);
                     log(`&nbsp;&nbsp;⏱ Continued timestamps across ${result.shifted + 1} part(s)` +
                         (undated ? ' — these files carry no clock, so a gap between separate ' +
                             'recordings would not show up' : ''),
