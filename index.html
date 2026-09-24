@@ -670,7 +670,8 @@
 
         /* Secondary action — same shape as #downloadBtn but outlined, and
            only shown once Drive is connected (see renderDrive). */
-        #mergeSyncBtn {
+        #mergeSyncBtn,
+        #rawBtn {
             display: none;
             width: 100%;
             margin-top: 10px;
@@ -689,20 +690,25 @@
             transition: background 0.2s ease;
         }
 
-        #mergeSyncBtn.visible {
+        /* Always offered: needs nothing but the device. */
+        #mergeSyncBtn.visible,
+        #rawBtn {
             display: flex;
         }
 
-        #mergeSyncBtn:hover:not(:disabled) {
+        #mergeSyncBtn:hover:not(:disabled),
+        #rawBtn:hover:not(:disabled) {
             background: rgba(99, 102, 241, 0.18);
         }
 
-        #mergeSyncBtn:disabled {
+        #mergeSyncBtn:disabled,
+        #rawBtn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
         }
 
-        #mergeSyncBtn svg {
+        #mergeSyncBtn svg,
+        #rawBtn svg {
             width: 19px;
             height: 19px;
             fill: #a5b4fc;
@@ -1501,6 +1507,13 @@
                 <path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
             </svg>
             Merge &amp; Sync to Drive
+        </button>
+
+        <button id="rawBtn" onclick="startDownload('raw')">
+            <svg viewBox="0 0 24 24">
+                <path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zm-6-1l-4-4h3v-4h2v4h3l-4 4z" />
+            </svg>
+            Download Individual Files
         </button>
 
         <div id="progressSection">
@@ -3621,11 +3634,13 @@
         }
 
         /**
-         * @param {'save'|'sync'} mode  'save' writes the merged CSVs to the
-         *   phone. 'sync' keeps them in memory and uploads straight to Drive,
-         *   so nothing is left on the device — but it still falls back to
-         *   writing them out if the upload fails, since by then the originals
-         *   may already have been deleted from the Gauge.S.
+         * @param {'save'|'sync'|'raw'} mode  'save' writes the merged CSVs
+         *   to the phone. 'sync' keeps them in memory and uploads straight to
+         *   Drive, so nothing is left on the device — but it still falls back
+         *   to writing them out if the upload fails, since by then the
+         *   originals may already have been deleted from the Gauge.S. 'raw'
+         *   skips merging and saves each device file as-is, under its own
+         *   name.
          */
         // ── Keeping the phone awake ──────────────────────────────────────
         // A run can outlast the screen timeout, and once Android suspends the
@@ -3913,6 +3928,8 @@
         async function runDownload(mode = 'save') {
             const btn = document.getElementById('downloadBtn');
             const syncBtn = document.getElementById('mergeSyncBtn');
+            const rawBtn = document.getElementById('rawBtn');
+            const raw = mode === 'raw';
             const progressSection = document.getElementById('progressSection');
             const summary = document.getElementById('summary');
 
@@ -3924,6 +3941,13 @@
             const pendingUploads = [];
             btn.disabled = true;
             if (syncBtn) syncBtn.disabled = true;
+            if (rawBtn) rawBtn.disabled = true;
+            const idle = again => {
+                btn.disabled = false;
+                if (syncBtn) syncBtn.disabled = false;
+                if (rawBtn) rawBtn.disabled = false;
+                btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download${again ? ' Again' : ''}`;
+            };
             btn.innerHTML = `
       <svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite"><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>
       Fetching file list…`;
@@ -3959,34 +3983,39 @@
                 }
             } catch (err) {
                 log(`Failed to fetch file list: ${describeTransportError(err)}`, 'error');
-                btn.disabled = false;
-                btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download`;
+                idle(false);
                 return;
             }
 
             // ── Step 2: Group files by output name ────────────────────────────────────
             // Map: outputName → [ ...member filenames in order ]
-            const groups = outputNames(files.map(f => f.name));
+            // Unmerged, every file is its own group and keeps its own name.
+            const groups = raw
+                ? new Map(files.map(f => f.name).sort(comparePartNames).map(n => [n, [n]]))
+                : outputNames(files.map(f => f.name));
 
             if (files.length === 0) {
                 log(`No log files on the device`, 'success');
                 document.getElementById('okCount').textContent = 0;
                 document.getElementById('errCount').textContent = 0;
                 summary.classList.add('visible');
-                btn.disabled = false;
-                btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download Again`;
+                idle(true);
                 return;
             }
 
-            log(`Grouped into <strong>${groups.size}</strong> output file(s)`, 'info');
-            for (const [out, members] of groups) {
-                log(`&nbsp;&nbsp;↳ <span style="color:#a5b4fc">${out}</span> ← ${members.length} part(s)`, 'info');
+            if (raw) {
+                log(`Saving <strong>${groups.size}</strong> file(s) individually, without merging`, 'info');
+            } else {
+                log(`Grouped into <strong>${groups.size}</strong> output file(s)`, 'info');
+                for (const [out, members] of groups) {
+                    log(`&nbsp;&nbsp;↳ <span style="color:#a5b4fc">${out}</span> ← ${members.length} part(s)`, 'info');
+                }
             }
 
             // ── Step 3: Fetch, concatenate, and download each group ───────────────────
             btn.innerHTML = `
       <svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite"><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>
-      Merging…`;
+      ${raw ? 'Downloading…' : 'Merging…'}`;
 
             // Total fetch operations across all groups
             const totalFetches = files.length;
@@ -3994,7 +4023,7 @@
             let okGroups = 0, errGroups = 0;
 
             for (const [outName, members] of groups) {
-                log(`── Merging → <strong>${outName}</strong>`, 'info');
+                if (!raw) log(`── Merging → <strong>${outName}</strong>`, 'info');
                 const parts = [];
                 let failedPart = null;
 
@@ -4044,13 +4073,20 @@
                         fetchesDone += untouched;
                         setProgress(fetchesDone, totalFetches);
                     }
-                    log(`✗ ${outName} skipped — ${failedPart} would not download after ` +
-                        `${DOWNLOAD_ATTEMPTS} attempts. Nothing was deleted from the device; ` +
-                        `run again to retry the whole log.`, 'error');
+                    log(raw
+                        ? `✗ ${outName} would not download after ${DOWNLOAD_ATTEMPTS} attempts — ` +
+                            `it was left on the device.`
+                        : `✗ ${outName} skipped — ${failedPart} would not download after ` +
+                            `${DOWNLOAD_ATTEMPTS} attempts. Nothing was deleted from the device; ` +
+                            `run again to retry the whole log.`, 'error');
                     continue;
                 }
 
-                const result = mergeCsvParts(parts);
+                // A single unmerged file is kept byte for byte: running it
+                // through the merge would still re-join its line endings.
+                const result = raw
+                    ? { text: parts[0].text, shifted: 0, hasTimestamp: true }
+                    : mergeCsvParts(parts);
                 const merged = result.text;
                 // Held for this session so Merge & Sync runs, which leave
                 // nothing on disk, can still be analysed straight away.
@@ -4128,7 +4164,7 @@
 
             if (IS_NATIVE && savedNativeFiles.length && nativePlugin('Share')) {
                 const shareBtn = document.getElementById('shareBtn');
-                shareBtn.textContent = `Export ${savedNativeFiles.length} merged file(s)…`;
+                shareBtn.textContent = `Export ${savedNativeFiles.length} ${raw ? '' : 'merged '}file(s)…`;
                 shareBtn.style.display = 'block';
             }
 
@@ -4150,9 +4186,7 @@
                 await syncToDrive({ silent: true });
             }
 
-            btn.disabled = false;
-            if (syncBtn) syncBtn.disabled = false;
-            btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5v-2z"/></svg> Merge &amp; Download Again`;
+            idle(true);
         }
 
         // Spinner keyframe
