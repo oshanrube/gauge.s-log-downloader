@@ -10,6 +10,7 @@ They are compared below against the stock Gauge.S
 | `MS43_430069_telegram.json` | 430069 (7551615), the latest and most common | 0.021194781 mg/str |
 | `MS43_430069_ext_telegram.json` | 430069 flashed with the ms4x extended-load binary | 0.04239 mg/str, VANOS intake at `0x40212` |
 | `MS43_430056_telegram.json` | 430056 (7519308 / 7545150) | 0.021194781 mg/str |
+| `MS43_std.json` | 430069 or 430056, stock `0x0B 0x03` block; known-good fallback | 0.021194781 mg/str |
 
 Copy the file for your software onto the Gauge.S SD card as `config.json`, or
 merge its `address` and `ecuparam` into your existing one. Where the analyzer
@@ -68,6 +69,9 @@ Vehicle Speed and Battery (the 8-bit 0.102 matches the 10-bit 0.025).
 - Calculated MAP and filtered load
 - MAF, pre- and post-cat O2, TPS / TPS plausibility, pedal plausibility and knock-sensor voltages
 - DMTL, fuel-cap and SAF voltages, plus the IAT / coolant / oil-temp sensor voltages
+
+`MS43_std.json` in this folder is the gauge.s file with these scaling fixes
+applied, plus the pedal unit/range and knock-sensor decimals.
 
 ### In `MS43_std.json` only
 
