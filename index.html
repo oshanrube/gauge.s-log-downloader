@@ -325,9 +325,21 @@
             cursor: pointer;
         }
 
-        .file-row-name {
+        .file-row-main {
             flex: 1;
             min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .file-row-meta {
+            font-size: 0.64rem;
+            color: #64748b;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .file-row-name {
             font-family: 'Courier New', monospace;
             font-size: 0.72rem;
             color: #cbd5e1;
@@ -2528,8 +2540,17 @@
                 e.inDrive = true;
                 e.driveId = d.id;
                 e.modifiedTime = d.modifiedTime;
+                e.driveSize = d.size;
             }
             for (const q of driveState.queue) touch(q.name).queued = true;
+
+            const meta = loadJson(LOG_META_KEY, {});
+            for (const e of byName.values()) {
+                const m = meta[e.name];
+                e.size = m ? m.size : e.driveSize;
+                e.durationMs = m ? m.durationMs : undefined;
+                e.hasMeta = !!m;
+            }
 
             return [...byName.values()].sort((a, b) => comparePartNames(a.name, b.name));
         }
@@ -2559,7 +2580,7 @@
                     const res = await httpRequest(
                         'https://www.googleapis.com/drive/v3/files' +
                         `?q=${encodeURIComponent(query)}` +
-                        `&fields=${encodeURIComponent('files(id,name,modifiedTime)')}` +
+                        `&fields=${encodeURIComponent('files(id,name,modifiedTime,size)')}` +
                         '&orderBy=modifiedTime desc&pageSize=100',
                         { headers: { Authorization: `Bearer ${accessToken}` } }
                     );
@@ -2568,7 +2589,10 @@
                 });
 
                 localStorage.setItem(DRIVE_LOGS_KEY, JSON.stringify(
-                    files.map(f => ({ id: f.id, name: f.name, modifiedTime: f.modifiedTime }))
+                    files.map(f => ({
+                        id: f.id, name: f.name, modifiedTime: f.modifiedTime,
+                        size: f.size != null ? Number(f.size) : undefined,
+                    }))
                 ));
                 analyseStatus(`Found ${files.length} log(s) in “${folder.name}”.`, 'success');
             } catch (err) {
@@ -2617,6 +2641,7 @@
                 if (!res.ok) throw httpError(res);
                 // Cached so sharing straight after copying doesn't re-download.
                 sessionLogs.set(name, res.body);
+                rememberLogMeta(name, res.body);
                 return res.body;
             });
         }
@@ -3132,9 +3157,21 @@
                 box.value = e.name;
                 box.addEventListener('change', onFileSelectionChanged);
 
+                const main = document.createElement('span');
+                main.className = 'file-row-main';
                 const name = document.createElement('span');
                 name.className = 'file-row-name';
                 name.textContent = e.name;
+                main.appendChild(name);
+                const details = [];
+                if (typeof e.size === 'number' && Number.isFinite(e.size)) details.push(formatBytes(e.size));
+                if (typeof e.durationMs === 'number') details.push(formatDuration(e.durationMs));
+                if (details.length) {
+                    const meta = document.createElement('span');
+                    meta.className = 'file-row-meta';
+                    meta.textContent = details.join(' · ');
+                    main.appendChild(meta);
+                }
 
                 const badges = document.createElement('span');
                 badges.className = 'file-badges';
@@ -3152,10 +3189,12 @@
                 if (!e.onPhone && !e.inDrive && e.inSession) add('unsaved', 'b-warn');
 
                 row.appendChild(box);
-                row.appendChild(name);
+                row.appendChild(main);
                 row.appendChild(badges);
                 list.appendChild(row);
             }
+
+            fillMissingLogMeta();
 
             document.getElementById('filesSelectAllBtn').disabled = entries.length === 0;
             document.getElementById('filesSelectAllBtn').textContent = 'Select all';
@@ -3772,6 +3811,111 @@
             localStorage.setItem(LOGS_KEY, JSON.stringify(logs.slice(0, MAX_REMEMBERED_LOGS)));
         }
 
+        // ── Log size & duration ──────────────────────────────────────────
+        // Worked out once, when the content is to hand, and kept by name — so
+        // the Files tab can show them without re-reading every log.
+        const LOG_META_KEY = 'logMetaCache';
+        const MAX_LOG_META = 200;
+
+        /** Size in bytes, and the time the recording spans (null if it has no clock). */
+        function logStats(text) {
+            const size = new Blob([text]).size;
+            let durationMs = null;
+            try {
+                const ts = CarDoctor.peekHeader(text).timeSource;
+                if (ts.kind !== 'rowIndex') {
+                    const timeOf = line => {
+                        const cells = line.replace(/\r$/, '').split(',');
+                        const num = i => {
+                            const v = cells[i] === undefined || cells[i].trim() === '' ? NaN : Number(cells[i]);
+                            return Number.isFinite(v) ? v : null;
+                        };
+                        if (ts.kind === 'elapsed') return num(ts.columnIndex);
+                        const h = num(ts.hour), m = num(ts.minute), s = num(ts.second);
+                        return h === null || m === null || s === null ? null : ((h * 60 + m) * 60 + s) * 1000;
+                    };
+                    const lines = text.split('\n');
+                    let first = null, last = null;
+                    for (let i = 1; i < lines.length && first === null; i++) first = timeOf(lines[i]);
+                    for (let i = lines.length - 1; i > 0 && last === null; i--) last = timeOf(lines[i]);
+                    if (first !== null && last !== null) {
+                        // A wall-clock log that ran over midnight wraps back to 0.
+                        if (ts.kind === 'clock' && last < first) last += 24 * 60 * 60 * 1000;
+                        durationMs = Math.max(0, last - first);
+                    }
+                }
+            } catch (err) {
+                console.warn('[files] could not read log duration:', err);
+            }
+            return { size, durationMs };
+        }
+
+        function rememberLogMeta(name, text) {
+            const meta = loadJson(LOG_META_KEY, {});
+            delete meta[name];
+            meta[name] = logStats(text);
+            const names = Object.keys(meta);
+            // Insertion order is recency, so the oldest go first.
+            for (const old of names.slice(0, Math.max(0, names.length - MAX_LOG_META))) delete meta[old];
+            try {
+                localStorage.setItem(LOG_META_KEY, JSON.stringify(meta));
+            } catch (err) {
+                console.warn('[files] could not store log metadata:', err);
+            }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+
+        function formatDuration(ms) {
+            const total = Math.round(ms / 1000);
+            const h = Math.floor(total / 3600);
+            const m = Math.floor((total % 3600) / 60);
+            const s = total % 60;
+            if (h) return `${h}h ${String(m).padStart(2, '0')}m`;
+            if (m) return `${m}m ${String(s).padStart(2, '0')}s`;
+            return `${s}s`;
+        }
+
+        // Logs saved before sizes were recorded are measured once, from memory
+        // or the phone only — never a Drive download just to fill in a label.
+        const logMetaAttempted = new Set();
+        let logMetaFilling = false;
+
+        async function fillMissingLogMeta() {
+            if (logMetaFilling) return;
+            const FS = nativePlugin('Filesystem');
+            const todo = fileInventory().filter(e =>
+                !e.hasMeta && !logMetaAttempted.has(e.name) && (e.inSession || (e.onPhone && FS)));
+            if (!todo.length) return;
+            logMetaFilling = true;
+            let found = false;
+            try {
+                for (const e of todo) {
+                    logMetaAttempted.add(e.name);
+                    let text = sessionLogs.get(e.name);
+                    if (text === undefined && e.onPhone && FS) {
+                        try {
+                            const read = await FS.readFile({ path: e.path, directory: e.directory, encoding: 'utf8' });
+                            text = typeof read.data === 'string' ? read.data : String(read.data);
+                        } catch (err) {
+                            console.warn('[files] could not measure', e.name, err);
+                        }
+                    }
+                    if (text !== undefined) {
+                        rememberLogMeta(e.name, text);
+                        found = true;
+                    }
+                }
+            } finally {
+                logMetaFilling = false;
+            }
+            if (found) renderFiles();
+        }
+
         function buildAnalysisPrompt(name, vehicle) {
             const lines = [];
             lines.push(`Attached is a datalog (CSV) from ${describeVehicle(vehicle)}.`);
@@ -4091,6 +4235,7 @@
                 // Held for this session so Merge & Sync runs, which leave
                 // nothing on disk, can still be analysed straight away.
                 sessionLogs.set(outName, merged);
+                rememberLogMeta(outName, merged);
                 const sizeKb = (merged.length / 1024).toFixed(1);
                 if (result.shifted) {
                     // Numbered files carry no recording time and the device's
