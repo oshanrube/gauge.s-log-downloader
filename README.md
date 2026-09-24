@@ -104,6 +104,9 @@ The merged files will be named like:
 - `Gauge.S_26-02-28_14-32.csv` — one day's dated session logs combined, stamped
   with the hour-minute of the download
 
+**Download Individual Files** skips merging and saves each log exactly as it
+came off the device, under its own name (e.g. `Gauge.S-1.csv`).
+
 The hour-minute keeps a second download on the same day from replacing the
 first. If numbered and dated logs land on the same date and time, the second
 file gets a `-2` suffix instead of being merged into the first.
