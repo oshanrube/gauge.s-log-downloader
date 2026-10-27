@@ -35,6 +35,12 @@
      * hard the engine was knocking.
      */
     const PEAK_NEGATIVE = 'PEAK_NEGATIVE';
+    /**
+     * Keep the highest. For on/off flags such as a warning lamp: averaging a
+     * lamp that lit for one raw sample of five reports 0.2, which reads as
+     * "off" to every rule asking whether it was on.
+     */
+    const PEAK_POSITIVE = 'PEAK_POSITIVE';
 
     /**
      * Canonical channel vocabulary.
@@ -60,7 +66,10 @@
         ['RADIATOR_TEMP', 'Radiator temp', 'degC', -50, 160, ['radiator temp', 'rad temp']],
         ['OIL_TEMP', 'Oil temp', 'degC', -50, 200, ['oil temp', 'oil temperature']],
         ['VEHICLE_SPEED', 'Vehicle speed', 'km/h', 0, 400, ['speed', 'vehicle speed', 'vss', 'road speed', 'vs']],
-        ['IACV', 'Idle air control', '%', -30, 110, ['iacv alphan', 'iacv position', 'iacv', 'iac', 'idle air control', 'idle valve']],
+        // 'idle actuator' ranks above a bare 'iacv' because of the MS43: its
+        // "IACV" status value reads 0.2% at a warm idle, where the idle
+        // actuator - the valve that actually feeds idle air - sits at 34%.
+        ['IACV', 'Idle air control', '%', -30, 110, ['iacv alphan', 'iacv position', 'idle actuator', 'iacv', 'iac', 'idle air control', 'idle valve']],
         ['LAMBDA_INT_1', 'Fuel trim bank 1', '%', -50, 50, ['lambda int 1', 'lambda integrator 1', 'short term fuel trim 1', 'stft 1', 'trim 1', 'lambda 1', 'a f correction 1']],
         ['LAMBDA_INT_2', 'Fuel trim bank 2', '%', -50, 50, ['lambda int 2', 'lambda integrator 2', 'short term fuel trim 2', 'stft 2', 'trim 2', 'lambda 2', 'a f correction 2']],
         // Timing the ECU has pulled in response to detected knock. Conventionally
@@ -69,12 +78,27 @@
         // used to infer, so when a log carries it the inferred detector stands down.
         ['KNOCK_CORRECTION', 'Knock correction', 'degCRK', -30, 10, ['knock correction', 'knock cor', 'feedback knock correction', 'knock', 'knock retard', 'fine knock learn', 'knock sum'], PEAK_NEGATIVE],
         ['CAM_ADVANCE', 'Cam advance', 'deg', -30, 90, ['cam advance', 'intake cam advance', 'vanos', 'avcs', 'vvt', 'cam angle', 'intake cam']],
+        // The second cam on a double-VANOS engine. Its own channel rather than
+        // a CAM_ADVANCE alias, so a log with both keeps both.
+        ['EXHAUST_CAM', 'Exhaust cam', 'deg', -90, 90, ['exhaust cam', 'exhaust cam advance', 'vanos exhaust', 'exhaust vanos']],
+        // What the driver asked for, as opposed to where the throttle plate
+        // is. On an MS43 the plate stays shut through most light driving
+        // while the idle actuator feeds the air, so the throttle reads 0%
+        // with the pedal plainly pressed.
+        ['PEDAL', 'Accelerator pedal', '%', 0, 100, ['accelerator pedal', 'accelerator position', 'accel pedal', 'pedal']],
         ['BATTERY_VOLTAGE', 'Battery voltage', 'V', 0, 20, ['battery voltage', 'batt v', 'vbat']],
         ['SYSTEM_VOLTAGE', 'System voltage', 'V', 0, 20, ['input v', 'system voltage', 'supply voltage', 'ecu voltage']],
         ['FUEL_RATE', 'Fuel rate', 'l/h', 0, 100, ['fuel usage', 'fuel rate', 'fuel flow']],
         ['ACCEL_X', 'Accel X', 'g', -5, 5, ['accel x', 'acceleration x', 'g x']],
         ['ACCEL_Y', 'Accel Y', 'g', -5, 5, ['accel y', 'acceleration y', 'g y']],
         ['ACCEL_Z', 'Accel Z', 'g', -5, 5, ['accel z', 'acceleration z', 'g z']],
+        ['ECU_FAN', 'Electric cooling fan', '%', 0, 100, ['ecu fan', 'electric fan', 'radiator fan', 'cooling fan']],
+        // On/off flags. A flag that never changes is a real answer ("the lamp
+        // stayed off"), not an unwired input, so the health gate accepts them
+        // constant - see `binary` below.
+        ['AC_COMPRESSOR', 'AC compressor', 'on/off', 0, 1, ['compressor', 'ac compressor', 'air conditioner compressor', 'ac clutch'], MEAN, true],
+        ['CHECK_ENGINE', 'Check engine lamp', 'on/off', 0, 1, ['check engine', 'check engine lamp', 'check engine light', 'mil'], PEAK_POSITIVE, true],
+        ['EML', 'EML lamp', 'on/off', 0, 1, ['eml', 'eml lamp', 'eml light'], PEAK_POSITIVE, true],
         // Derived, never read from a file: short-window standard deviation of
         // engine speed. It carries no aliases, so resolve() can never match a
         // header to it. Computing roughness in the time domain and then
@@ -83,10 +107,11 @@
         ['RPM_ROUGHNESS', 'Engine speed roughness', 'rpm', 0, 2000, []],
     ];
 
-    const CHANNELS = CHANNEL_DEFS.map(([name, displayName, unit, lo, hi, aliases, mode], ordinal) => ({
+    const CHANNELS = CHANNEL_DEFS.map(([name, displayName, unit, lo, hi, aliases, mode, binary], ordinal) => ({
         ordinal, name, displayName, unit,
         plausibleMin: lo, plausibleMax: hi,
         aliases, resampleMode: mode || MEAN,
+        binary: !!binary,
     }));
 
     /** Channels by name, so rules read `CH.RPM` rather than an index. */
@@ -190,6 +215,15 @@
         highLoadThreshold: 400,
         /** Throttle moving faster than this makes the sample a transient. */
         steadyTpsRatePctPerSec: 3,
+        /**
+         * The same for the accelerator pedal. Far looser than the throttle
+         * because a foot holding a steady cruise keeps wobbling the pedal, and
+         * the ECU smooths that away before it reaches the throttle. On the
+         * reference MS43 log a 5%/s gate filed 31% of the drive as transient
+         * against 9% without the pedal; at 10%/s it adds 1.5 minutes of genuine
+         * light-load tip-ins that the shut throttle plate never showed.
+         */
+        steadyPedalRatePctPerSec: 10,
         /** Engine speed changing faster than this makes the sample a transient. */
         steadyRpmRatePerSec: 400,
         /**
@@ -251,18 +285,50 @@
     }
 
     /**
+     * BMW M54 on the Siemens MS43: only what is known about this engine and
+     * differs from the generic profile. Everything else stays generic.
+     */
+    const M54_MS43_OVERRIDES = {
+        /**
+         * The MS43 drives a map-controlled thermostat: at light load it lets
+         * the coolant run hot on purpose, about 105-110 degC, for economy.
+         * The generic 110 degC limit would call that designed behaviour an
+         * overheat, so the limit sits above the map's own range.
+         */
+        overheatCoolantC: 115,
+        /**
+         * Even under load the map thermostat holds about 90 degC or more. A
+         * warm engine that never gets there is not being regulated.
+         */
+        thermostatTargetC: 90,
+        /**
+         * Used until the drive itself shows a full-throttle pull to learn from.
+         * A 3.0 l six fills about 500 cc per cylinder, roughly 590 mg of air
+         * per stroke at full charge, so the generic 400 files ordinary brisk
+         * driving as a full-load pull.
+         */
+        highLoadThreshold: 550,
+    };
+
+    /** Matches a vehicle record naming the M54 engine or the MS43 ECU. */
+    const M54_MS43_PATTERN = /\bM54|\bMS43\b/i;
+
+    /**
      * Turns the app's vehicle record - the same one the AI hand-off describes in
      * prose - into analysis thresholds.
      *
      * One record, two consumers: the model reads it as a sentence, the pipeline
      * reads it as numbers. Only what the rules can actually act on crosses over.
      * Free text like chassis or ECU is deliberately not guessed at here: a wrong
-     * threshold is worse than a generic one, and what full load means on this
-     * engine is learned from the drive rather than looked up by name.
+     * threshold is worse than a generic one. The one exception is an engine
+     * this analyser knows (M54_MS43_OVERRIDES), matched by name. Even then, what
+     * full load means is still learned from the drive when it holds a pull.
      */
     function profileFromVehicle(vehicle, base) {
         const overrides = {};
         if (vehicle) {
+            const described = [vehicle.engine, vehicle.ecu].filter(Boolean).join(' ');
+            if (M54_MS43_PATTERN.test(described)) Object.assign(overrides, M54_MS43_OVERRIDES);
             const ambient = Number.parseFloat(vehicle.ambient);
             // A plausible outdoor temperature, not a typo or an empty box.
             if (Number.isFinite(ambient) && ambient >= -60 && ambient <= 60) {
@@ -602,6 +668,9 @@
                 if (channel.resampleMode === PEAK_NEGATIVE) {
                     const current = this.extremes[i];
                     if (Number.isNaN(current) || v < current) this.extremes[i] = v;
+                } else if (channel.resampleMode === PEAK_POSITIVE) {
+                    const current = this.extremes[i];
+                    if (Number.isNaN(current) || v > current) this.extremes[i] = v;
                 }
             }
             this.pending = true;
@@ -618,9 +687,9 @@
             for (let i = 0; i < CHANNELS.length; i++) {
                 let value;
                 if (this.counts[i] > 0) {
-                    value = CHANNELS[i].resampleMode === PEAK_NEGATIVE
-                        ? this.extremes[i]
-                        : this.sums[i] / this.counts[i];
+                    value = CHANNELS[i].resampleMode === MEAN
+                        ? this.sums[i] / this.counts[i]
+                        : this.extremes[i];
                     this.lastKnown[i] = value;
                 } else {
                     value = this.lastKnown[i];
@@ -698,8 +767,10 @@
                 }
                 const oorFraction = this.outOfRange[i] / n;
                 let status;
+                // A lamp that stayed off all drive is the normal case, not a
+                // dead input, so a constant on/off flag is still evidence.
                 if (oorFraction > IMPLAUSIBLE_FRACTION) status = STATUS_IMPLAUSIBLE;
-                else if (this.maxs[i] - this.mins[i] <= CONSTANT_EPSILON) status = STATUS_CONSTANT;
+                else if (this.maxs[i] - this.mins[i] <= CONSTANT_EPSILON && !channel.binary) status = STATUS_CONSTANT;
                 else status = STATUS_OK;
 
                 health.set(channel, {
@@ -998,11 +1069,14 @@
          * @param closedThrottlePct throttle reading that means "closed" for this
          *   vehicle, learned on the calibration pass. Null falls back to
          *   treating near-zero as closed, which is only correct for some loggers.
+         * @param closedPedalPct the same for the accelerator pedal.
          */
-        constructor(profile, closedThrottlePct = null, rateWindowMs = 1000) {
+        constructor(profile, closedThrottlePct = null, rateWindowMs = 1000, closedPedalPct = null) {
             this.profile = profile;
             this.closedThrottlePct = closedThrottlePct;
+            this.closedPedalPct = closedPedalPct;
             this.tpsWindow = new RateWindow(rateWindowMs);
+            this.pedalWindow = new RateWindow(rateWindowMs);
             this.rpmWindow = new RateWindow(rateWindowMs);
             this.ignitionWindow = new RateWindow(rateWindowMs);
             this.loadWindow = new RateWindow(rateWindowMs);
@@ -1014,6 +1088,7 @@
                 sample.timeMs - this.lastTimeMs > MAX_CONTINUOUS_GAP_MS;
             if (discontinuity) {
                 this.tpsWindow.clear();
+                this.pedalWindow.clear();
                 this.rpmWindow.clear();
                 this.ignitionWindow.clear();
                 this.loadWindow.clear();
@@ -1021,11 +1096,13 @@
             this.lastTimeMs = sample.timeMs;
 
             this.tpsWindow.push(sample.timeMs, sample.get(CH.TPS));
+            this.pedalWindow.push(sample.timeMs, sample.get(CH.PEDAL));
             this.rpmWindow.push(sample.timeMs, sample.get(CH.RPM));
             this.ignitionWindow.push(sample.timeMs, sample.get(CH.IGNITION_ADVANCE));
             this.loadWindow.push(sample.timeMs, sample.get(CH.ENGINE_LOAD));
 
             const tpsRate = discontinuity ? 0 : this.tpsWindow.excursionPerSec();
+            const pedalRate = discontinuity ? 0 : this.pedalWindow.excursionPerSec();
             const rpmRate = discontinuity ? 0 : this.rpmWindow.ratePerSec();
             const loadRate = discontinuity ? 0 : this.loadWindow.excursionPerSec();
             const retard = discontinuity ? 0 : this.ignitionWindow.dropFromPeak();
@@ -1034,7 +1111,7 @@
             return {
                 sample,
                 timeMs: sample.timeMs,
-                state: this.classify(sample, tpsRate, rpmRate, loadRate),
+                state: this.classify(sample, tpsRate, rpmRate, loadRate, pedalRate),
                 tpsRatePctPerSec: tpsRate,
                 rpmRatePerSec: rpmRate,
                 ignitionRetardDeg: retard,
@@ -1044,7 +1121,7 @@
             };
         }
 
-        classify(sample, tpsRate, rpmRate, loadRate) {
+        classify(sample, tpsRate, rpmRate, loadRate, pedalRate = 0) {
             const profile = this.profile;
             const rpm = sample.get(CH.RPM);
             if (Number.isNaN(rpm) || rpm < profile.runningRpmMin) return ST.ENGINE_OFF;
@@ -1061,14 +1138,24 @@
             // throttle sensor with a dead zone will sit at zero through real
             // pedal movement that load registers clearly.
             const throttleMoving = Math.abs(tpsRate) > profile.steadyTpsRatePctPerSec;
+            const pedalMoving = Math.abs(pedalRate) > profile.steadyPedalRatePctPerSec;
             const loadMoving = Math.abs(loadRate) > profile.steadyLoadRatePerSec;
-            if (throttleMoving || loadMoving) return ST.TIP_IN;
+            if (throttleMoving || pedalMoving || loadMoving) return ST.TIP_IN;
 
             const tps = sample.get(CH.TPS);
+            const pedal = sample.get(CH.PEDAL);
             const speed = sample.get(CH.VEHICLE_SPEED);
             const load = sample.get(CH.ENGINE_LOAD);
             const closedReference = this.closedThrottlePct === null ? 0 : this.closedThrottlePct;
-            const closedThrottle = !Number.isNaN(tps) && tps <= closedReference + profile.closedThrottleBandPct;
+            const pedalReference = this.closedPedalPct === null ? 0 : this.closedPedalPct;
+            // Closed only when every position signal the log carries agrees.
+            // A throttle plate resting shut says nothing on its own where the
+            // ECU feeds light-load air around it; a pressed pedal does.
+            const tpsKnown = !Number.isNaN(tps);
+            const pedalKnown = !Number.isNaN(pedal);
+            const closedThrottle = (tpsKnown || pedalKnown) &&
+                (!tpsKnown || tps <= closedReference + profile.closedThrottleBandPct) &&
+                (!pedalKnown || pedal <= pedalReference + profile.closedThrottleBandPct);
 
             // Overrun needs corroboration from load. A closed-throttle reading
             // on its own says only that the sensor reads zero, not that the
@@ -1083,7 +1170,8 @@
                 return ST.IDLE_WARM;
             }
 
-            const highLoad = (!Number.isNaN(tps) && tps >= profile.wotTpsPct) ||
+            const highLoad = (tpsKnown && tps >= profile.wotTpsPct) ||
+                (pedalKnown && pedal >= profile.wotTpsPct) ||
                 (!Number.isNaN(load) && load >= profile.highLoadThreshold);
             if (highLoad) return ST.WOT_PULL;
 
@@ -1367,6 +1455,8 @@
         OVERHEAT: 'Coolant or oil over temperature',
         VOLTAGE_SAG: 'System voltage sag while running',
         IDLE_WOBBLE: 'Unstable idle speed',
+        CHECK_ENGINE_LAMP: 'Check engine lamp lit',
+        EML_LAMP: 'EML lamp lit',
     };
 
     /**
@@ -1456,6 +1546,12 @@
             this.byState = new Map();
             this.byStateLoad = new Map();
             this.byStateRpm = new Map();
+            // Warm idle split by whether the AC compressor was running. The
+            // compressor is a real load at idle - on the reference MS43 car it
+            // lifts idle by 35 rpm, load by a fifth and opens the idle actuator
+            // further - so an idle judged with it running is a different idle.
+            this.idleByAc = new Map();
+            this.compressorSeconds = 0;
             this.stateSeconds = new Map();
             this.events = new EventCollector(Math.trunc(profile.eventDeadTimeSec * 1000));
             this.sparkMap = new SparkMap();
@@ -1469,6 +1565,7 @@
             this.warmReachedMs = null;
             this.knockRun = 0;
             this.minRunningTps = NaN;
+            this.minRunningPedal = NaN;
             this.ambientTracker = new SustainedMinTracker(AMBIENT_WINDOW_SECONDS * 1000);
         }
 
@@ -1493,11 +1590,26 @@
                 if (!Number.isNaN(tps) && (Number.isNaN(this.minRunningTps) || tps < this.minRunningTps)) {
                     this.minRunningTps = tps;
                 }
+                const pedal = sample.get(CH.PEDAL);
+                if (!Number.isNaN(pedal) && (Number.isNaN(this.minRunningPedal) || pedal < this.minRunningPedal)) {
+                    this.minRunningPedal = pedal;
+                }
             }
 
             const stateCell = this.cellFor(this.byState, state);
             stateCell.countSample();
             this.observeAll(stateCell, sample.timeMs, analyzed);
+
+            const compressor = sample.get(CH.AC_COMPRESSOR);
+            if (!Number.isNaN(compressor)) {
+                const on = compressor >= 0.5;
+                if (on && state !== ST.ENGINE_OFF) this.compressorSeconds += dtSec;
+                if (state === ST.IDLE_WARM) {
+                    const cell = this.cellFor(this.idleByAc, on ? 'on' : 'off');
+                    cell.countSample();
+                    this.observeAll(cell, sample.timeMs, analyzed);
+                }
+            }
 
             const loadBin = loadBinOf(sample.get(CH.ENGINE_LOAD), this.profile.highLoadThreshold);
             if (loadBin) {
@@ -1645,6 +1757,17 @@
             if (analyzed.state !== ST.ENGINE_OFF && !Number.isNaN(volts) && volts < profile.chargingMinV) {
                 this.events.record(EVENT_TYPES.VOLTAGE_SAG, t, profile.chargingMinV - volts, { volts });
             }
+
+            // Running only: with the key on and the engine stopped the ECU
+            // lights both lamps as a bulb check.
+            if (analyzed.state !== ST.ENGINE_OFF) {
+                if (s.get(CH.CHECK_ENGINE) >= 0.5) {
+                    this.events.record(EVENT_TYPES.CHECK_ENGINE_LAMP, t, 1, { rpm: s.get(CH.RPM) });
+                }
+                if (s.get(CH.EML) >= 0.5) {
+                    this.events.record(EVENT_TYPES.EML_LAMP, t, 1, { rpm: s.get(CH.RPM) });
+                }
+            }
         }
 
         /** What this pass learned, handed to the next pass. */
@@ -1652,7 +1775,10 @@
             const closed = (!Number.isNaN(this.minRunningTps) && this.minRunningTps <= MAX_PLAUSIBLE_CLOSED_TPS)
                 ? this.minRunningTps
                 : null;
-            return { sparkMap: this.sparkMap, closedThrottlePct: closed };
+            const pedal = (!Number.isNaN(this.minRunningPedal) && this.minRunningPedal <= MAX_PLAUSIBLE_CLOSED_TPS)
+                ? this.minRunningPedal
+                : null;
+            return { sparkMap: this.sparkMap, closedThrottlePct: closed, closedPedalPct: pedal };
         }
 
         build(readStats, health, staleSpans = []) {
@@ -1677,6 +1803,8 @@
                 byState: this.byState,
                 byStateLoad: this.byStateLoad,
                 byStateRpm: this.byStateRpm,
+                idleByAc: this.idleByAc,
+                compressorSeconds: this.compressorSeconds,
                 stateSeconds: this.stateSeconds,
                 events: this.events,
                 timeline,
@@ -1996,6 +2124,68 @@
     };
 
     /**
+     * Extra fuel arriving that the ECU did not meter - the mirror image of a
+     * vacuum leak.
+     *
+     * A fixed stray quantity of fuel (a canister purge valve stuck open, an
+     * injector that drips, a fuel pressure regulator diaphragm letting fuel
+     * into the intake) is a large share of the small amount injected at idle
+     * and vanishes into the large amount injected under load. So the ECU
+     * removes a lot of fuel at low load and almost none at high load, and that
+     * converging shape is what separates it from an engine that is rich
+     * everywhere.
+     */
+    const RichLowLoadDetector = {
+        id: 'fuel.rich_low_load',
+        title: 'Extra fuel at low load',
+        subSystem: SUBSYSTEM.FUEL,
+        requires: [CH.LAMBDA_INT_1, CH.ENGINE_LOAD],
+        validStates: [ST.IDLE_WARM, ST.CRUISE_STEADY],
+        minEvidenceSeconds: 60,
+
+        evaluate(summary, ctx) {
+            const profile = summary.profile;
+            const low = mergedTrim(summary, ctx, this.validStates, LOW_LOAD_BINS);
+            if (!low || low.count < MIN_CELL_SAMPLES) return null;
+
+            const lowMedian = low.median;
+            if (Number.isNaN(lowMedian) || lowMedian > -profile.trimSignificantPct) return null;
+
+            const high = mergedTrim(summary, ctx, this.validStates.concat([ST.WOT_PULL]), HIGH_LOAD_BINS);
+            const highMedian = (high && high.count >= MIN_CELL_SAMPLES) ? high.median : null;
+            // Rich at every load is a different fault, left to the rich-mixture rule.
+            if (highMedian !== null && highMedian <= -profile.trimSignificantPct) return null;
+
+            const converges = highMedian !== null && highMedian - lowMedian >= profile.trimSignificantPct / 2;
+            const ev = [evidence('Fuel trim, low load', ctx.fmt(lowMedian, 1) + '% (median of ' + low.count + ' samples)')];
+            if (highMedian !== null) {
+                ev.push(evidence('Fuel trim, high load', ctx.fmt(highMedian, 1) + '% (median of ' + high.count + ' samples)'));
+            }
+
+            return {
+                detectorId: this.id,
+                title: this.title,
+                subSystem: this.subSystem,
+                severity: lowMedian <= -profile.trimRailPct ? SEVERITY.HIGH : SEVERITY.MODERATE,
+                confidence: converges ? CONFIDENCE.MEDIUM : CONFIDENCE.LOW,
+                summary: 'The ECU is removing ' + ctx.fmt(Math.abs(lowMedian), 1) + '% of the fuel at low load' +
+                    (highMedian !== null
+                        ? ', against ' + ctx.fmt(highMedian, 1) + '% at high load. A fixed amount of fuel the ECU ' +
+                          'did not meter matters a lot at idle and disappears under load, which is this shape.'
+                        : '. The log has too little high-load driving to tell a fixed fuel leak from an engine ' +
+                          'that is rich everywhere.'),
+                evidence: ev,
+                suggestedChecks: [
+                    'Check the canister purge (tank vent) valve: it must hold vacuum when unpowered',
+                    'Pull the fuel pressure regulator vacuum hose and look for fuel in it',
+                    'Leak-down test the injectors, or watch for a rich idle right after a hot restart',
+                ],
+                causeKey: 'rich',
+            };
+        },
+    };
+
+    /**
      * One bank correcting differently from the other.
      *
      * A whole-engine fault (fuel pressure, airflow meter) moves both banks
@@ -2081,6 +2271,11 @@
             }
             if (summary.timeline.peakOilC !== null) {
                 ev.push(evidence('Peak oil', ctx.fmt(summary.timeline.peakOilC, 1) + ' degC'));
+            }
+            // A fan that never ran while the engine was hot is the first thing to rule out.
+            if (summary.isUsable(CH.ECU_FAN)) {
+                const fan = ctx.across(CH.ECU_FAN, STATES);
+                if (fan) ev.push(evidence('Electric fan', 'peak ' + ctx.fmt(fan.max, 0) + '% of full speed'));
             }
 
             return {
@@ -2430,52 +2625,60 @@
      * log spent entirely at idle proves nothing about a cam that only advances
      * off idle.
      */
-    const CamTimingDetector = {
-        id: 'ignition.cam_stuck',
-        title: 'Variable valve timing not moving',
-        subSystem: SUBSYSTEM.IGNITION,
-        requires: [CH.CAM_ADVANCE, CH.RPM],
-        validStates: WARM_STATES,
-        minEvidenceSeconds: 180,
+    function camTimingDetector(channel, id, title) {
+        return {
+            id,
+            title,
+            subSystem: SUBSYSTEM.IGNITION,
+            requires: [channel, CH.RPM],
+            validStates: WARM_STATES,
+            minEvidenceSeconds: 180,
 
-        evaluate(summary, ctx) {
-            const cam = ctx.across(CH.CAM_ADVANCE, this.validStates);
-            const rpm = ctx.across(CH.RPM, this.validStates);
-            if (!cam || !rpm) return null;
-            if (cam.count < MIN_CELL_SAMPLES) return null;
+            evaluate(summary, ctx) {
+                const cam = ctx.across(channel, this.validStates);
+                const rpm = ctx.across(CH.RPM, this.validStates);
+                if (!cam || !rpm) return null;
+                if (cam.count < MIN_CELL_SAMPLES) return null;
 
-            // Without a decent rpm spread there is no reason to expect the cam
-            // to have moved, so any conclusion would be unfounded.
-            const rpmSpread = rpm.quantile(0.95) - rpm.quantile(0.05);
-            if (rpmSpread < CAM_MIN_RPM_SPREAD) return null;
+                // Without a decent rpm spread there is no reason to expect the cam
+                // to have moved, so any conclusion would be unfounded.
+                const rpmSpread = rpm.quantile(0.95) - rpm.quantile(0.05);
+                if (rpmSpread < CAM_MIN_RPM_SPREAD) return null;
 
-            const span = cam.max - cam.min;
-            if (span >= summary.profile.camAdvanceMinSpanDeg) return null;
+                const span = cam.max - cam.min;
+                if (span >= summary.profile.camAdvanceMinSpanDeg) return null;
 
-            return {
-                detectorId: this.id,
-                title: this.title,
-                subSystem: this.subSystem,
-                severity: SEVERITY.MODERATE,
-                confidence: CONFIDENCE.MEDIUM,
-                summary: 'Cam advance stayed within ' + ctx.fmt(span, 1) + ' degrees across the whole drive, ' +
-                    'even though engine speed ranged over ' + ctx.fmt(rpmSpread, 0) + ' rpm. A working system ' +
-                    'sweeps the cam by tens of degrees as load and engine speed change, so this one appears to ' +
-                    'be stuck.',
-                evidence: [
-                    evidence('Cam advance range', ctx.fmt(cam.min, 1) + ' to ' + ctx.fmt(cam.max, 1) + ' deg'),
-                    evidence('Engine speed range covered', ctx.fmt(rpmSpread, 0) + ' rpm (5th-95th pct)'),
-                    evidence('Samples', String(cam.count)),
-                ],
-                suggestedChecks: [
-                    'Check engine oil level and condition - the phaser is moved by oil pressure',
-                    'Test the oil control valve and clean its filter screen',
-                    'Check for cam timing fault codes stored in the ECU',
-                ],
-                causeKey: 'cam-timing',
-            };
-        },
-    };
+                return {
+                    detectorId: this.id,
+                    title: this.title,
+                    subSystem: this.subSystem,
+                    severity: SEVERITY.MODERATE,
+                    confidence: CONFIDENCE.MEDIUM,
+                    summary: channel.displayName + ' stayed within ' + ctx.fmt(span, 1) + ' degrees across the whole drive, ' +
+                        'even though engine speed ranged over ' + ctx.fmt(rpmSpread, 0) + ' rpm. A working system ' +
+                        'sweeps the cam by tens of degrees as load and engine speed change, so this one appears to ' +
+                        'be stuck.',
+                    evidence: [
+                        evidence(channel.displayName + ' range', ctx.fmt(cam.min, 1) + ' to ' + ctx.fmt(cam.max, 1) + ' deg'),
+                        evidence('Engine speed range covered', ctx.fmt(rpmSpread, 0) + ' rpm (5th-95th pct)'),
+                        evidence('Samples', String(cam.count)),
+                    ],
+                    suggestedChecks: [
+                        'Check engine oil level and condition - the phaser is moved by oil pressure',
+                        'Test the oil control valve and clean its filter screen',
+                        'Check for cam timing fault codes stored in the ECU',
+                    ],
+                    causeKey: 'cam-timing',
+                };
+            },
+        };
+    }
+
+    const CamTimingDetector = camTimingDetector(CH.CAM_ADVANCE, 'ignition.cam_stuck',
+        'Variable valve timing not moving');
+    /** The exhaust side of a double-VANOS engine, judged the same way. */
+    const ExhaustCamTimingDetector = camTimingDetector(CH.EXHAUST_CAM, 'ignition.exhaust_cam_stuck',
+        'Exhaust valve timing not moving');
 
     // ── Electrical ────────────────────────────────────────────────────────
 
@@ -2582,6 +2785,18 @@
             if (!roughness || roughness.count < MIN_CELL_SAMPLES) return null;
             if (roughness.mean < summary.profile.idleRpmStdevMax) return null;
 
+            // The AC compressor cycling in and out is a load step the idle
+            // control has to catch every time. If the idle is steady whenever
+            // the compressor is off, the wobble is that, not a fault.
+            const acOff = summary.idleByAc && summary.idleByAc.get('off');
+            const acOn = summary.idleByAc && summary.idleByAc.get('on');
+            const roughOff = acOff ? acOff.get(CH.RPM_ROUGHNESS) : null;
+            if (roughOff && roughOff.count >= MIN_CELL_SAMPLES &&
+                roughOff.mean < summary.profile.idleRpmStdevMax) return null;
+            const acShare = (acOn || acOff)
+                ? (acOn ? acOn.samples : 0) / ((acOn ? acOn.samples : 0) + (acOff ? acOff.samples : 0))
+                : null;
+
             const rpm = ctx.across(CH.RPM, [ST.IDLE_WARM]);
             const iacv = summary.isUsable(CH.IACV) ? ctx.across(CH.IACV, [ST.IDLE_WARM]) : null;
             const iacvSaturated = !!iacv && iacv.max >= IACV_SATURATION_PCT;
@@ -2603,13 +2818,24 @@
                 ev.push(evidence('Idle air valve',
                     'mean ' + ctx.fmt(iacv.mean, 1) + '%, peak ' + ctx.fmt(iacv.max, 1) + '%'));
             }
+            // Rough with the compressor off too: the AC cannot be the reason.
+            const roughWithoutAc = !!roughOff && roughOff.count >= MIN_CELL_SAMPLES;
+            if (acShare !== null) {
+                ev.push(evidence('AC compressor running', ctx.fmt(acShare * 100, 0) + '% of warm idle'));
+                if (roughWithoutAc) {
+                    ev.push(evidence('Idle roughness, AC off', ctx.fmt(roughOff.mean, 0) + ' rpm'));
+                } else {
+                    text += ' The compressor was running for most of this idle, so it could not be judged ' +
+                        'without the AC load.';
+                }
+            }
 
             return {
                 detectorId: this.id,
                 title: this.title,
                 subSystem: this.subSystem,
                 severity: SEVERITY.MODERATE,
-                confidence: iacvSaturated ? CONFIDENCE.MEDIUM : CONFIDENCE.LOW,
+                confidence: (iacvSaturated || roughWithoutAc) ? CONFIDENCE.MEDIUM : CONFIDENCE.LOW,
                 summary: text,
                 evidence: ev,
                 suggestedChecks: [
@@ -2685,6 +2911,589 @@
                 ],
                 causeKey: 'intake-temp',
             };
+        },
+    };
+
+    // ── ECU ───────────────────────────────────────────────────────────────
+
+    /** Lit for less than this while running is a flicker, not the ECU flagging a fault. */
+    const LAMP_MIN_SECONDS = 2;
+
+    /**
+     * The ECU's own warning lamps, lit while the engine ran.
+     *
+     * Not an inference: the ECU lights the lamp when it has stored a fault
+     * serious enough to tell the driver. The EML lamp is the more urgent of the
+     * two on a drive-by-wire BMW - it means the throttle system has a fault and
+     * the ECU may have limited power.
+     */
+    const WarningLampDetector = {
+        id: 'ecu.warning_lamp',
+        title: 'Warning lamp lit',
+        subSystem: SUBSYSTEM.SENSORS,
+        requires: [],
+        validStates: STATES,
+        minEvidenceSeconds: 0,
+
+        evaluate(summary, ctx) {
+            const lamps = [
+                { type: EVENT_TYPES.CHECK_ENGINE_LAMP, name: 'Check engine lamp', severity: SEVERITY.MODERATE },
+                { type: EVENT_TYPES.EML_LAMP, name: 'EML lamp', severity: SEVERITY.HIGH },
+            ].map(lamp => {
+                const events = summary.events.eventsOf(lamp.type);
+                const seconds = events.reduce((sum, e) => sum + e.durationSec, 0);
+                return Object.assign(lamp, { events, seconds });
+            }).filter(lamp => lamp.events.length && lamp.seconds >= LAMP_MIN_SECONDS);
+            if (lamps.length === 0) return null;
+
+            const worst = lamps.reduce((a, b) => (b.severity.rank > a.severity.rank ? b : a));
+            return {
+                detectorId: this.id,
+                title: lamps.map(l => l.name).join(' and ') + ' lit while driving',
+                subSystem: this.subSystem,
+                severity: worst.severity,
+                confidence: CONFIDENCE.HIGH,
+                summary: 'The ECU lit the ' + lamps.map(l => l.name.toLowerCase()).join(' and the ') +
+                    ' with the engine running, first at ' + ctx.fmtTime(lamps[0].events[0].startMs) +
+                    '. It only does that once it has stored a fault, so the fault memory names the cause.',
+                evidence: lamps.map(l => evidence(l.name,
+                    'on for ' + ctx.fmt(l.seconds, 0) + 's in ' + l.events.length + ' stretch(es)',
+                    l.events[0].startMs)),
+                suggestedChecks: [
+                    'Read the ECU fault memory',
+                    'After repairing, clear the codes and check the lamp stays off on the next drive',
+                ],
+                causeKey: 'warning-lamp',
+            };
+        },
+    };
+
+    /**
+     * An ECU snapshot is what the ECU itself has stored, read over its
+     * diagnostic link close to the drive (options.ecu):
+     *
+     *   {
+     *     takenAt: '2026-10-27T14:40:00+05:30',
+     *     dme: '7551615',                                  // optional
+     *     faults: [{ code: 238, text: 'Misfire Cyl 1' }],  // stored fault memory
+     *     adaptations: {                                    // null when not readable
+     *       additiveMs: [bank1, bank2],        // learned idle fuel, injection ms
+     *       multiplicativePct: [bank1, bank2], // learned fuel at every load, %
+     *     },
+     *     ronAdaptationPct: 0,  // how far the ECU moved toward its low-octane map
+     *   }
+     *
+     * The log shows what the ECU corrected during one drive. The adaptations
+     * show what it has learned to correct before the drive even starts, and
+     * that is where an old fault hides: once the ECU has adapted to a vacuum
+     * leak, the short-term trims in the log sit near zero and only the
+     * learned value still shows it.
+     */
+    function normalizeEcuSnapshot(raw, logStartedAt) {
+        if (!raw || typeof raw !== 'object') return null;
+        const num = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+        const pair = v => (Array.isArray(v) ? [num(v[0]), num(v[1])] : [null, null]);
+        const taken = Date.parse(raw.takenAt);
+        const started = Date.parse(logStartedAt);
+        const adaptations = raw.adaptations && typeof raw.adaptations === 'object'
+            ? { additiveMs: pair(raw.adaptations.additiveMs), multiplicativePct: pair(raw.adaptations.multiplicativePct) }
+            : null;
+        return {
+            takenAt: Number.isNaN(taken) ? null : new Date(taken).toISOString(),
+            dme: raw.dme ? String(raw.dme) : null,
+            faults: (Array.isArray(raw.faults) ? raw.faults : [])
+                .filter(f => f && Number.isInteger(f.code))
+                .map(f => ({ code: f.code, text: f.text ? String(f.text) : 'fault ' + f.code })),
+            adaptations,
+            ronAdaptationPct: num(raw.ronAdaptationPct),
+            // How far from the drive the snapshot was taken, either side. Null
+            // when either time is unknown.
+            hoursFromDrive: (Number.isNaN(taken) || Number.isNaN(started))
+                ? null : Math.abs(taken - started) / 3600000,
+        };
+    }
+
+    /** Beyond this the snapshot describes the car, not necessarily this drive. */
+    const ECU_SNAPSHOT_STALE_HOURS = 14 * 24;
+
+    function snapshotAge(ecu) {
+        if (ecu.hoursFromDrive === null) return 'taken ' + (ecu.takenAt ? ecu.takenAt.slice(0, 10) : 'at an unknown time');
+        return ecu.hoursFromDrive < 1 ? 'taken within the hour of this drive'
+            : ecu.hoursFromDrive < 48 ? 'taken ' + Math.round(ecu.hoursFromDrive) + ' h from this drive'
+            : 'taken ' + Math.round(ecu.hoursFromDrive / 24) + ' days from this drive';
+    }
+
+    /** MS4x fault codes for a misfire on cylinders 1 to 6. */
+    const MISFIRE_CODES = new Map([[238, 1], [239, 2], [240, 3], [241, 4], [242, 5], [243, 6]]);
+
+    /**
+     * Stored fault codes that speak to a cause the log can also show, by the
+     * causeKey of the findings they support. Numbers are BMW's MS41-MS43 fault
+     * codes (the ones INPA shows), not OBD P-codes.
+     */
+    const FAULT_LINKS = [
+        // Mixture deviation, lambda regulation and the airflow meter
+        { codes: [227, 228, 200, 201, 8, 94], causeKeys: ['lean-low-load', 'lean-high-load', 'rich', 'bank-1', 'bank-2'] },
+        // Tank vent and evaporative system: a purge valve stuck open feeds fuel vapour at idle
+        { codes: [126, 143, 144, 145, 194, 195, 254], causeKeys: ['rich'] },
+        // VANOS
+        { codes: [19, 21, 65, 103, 104, 105, 106, 212], causeKeys: ['cam-timing'] },
+        // Map thermostat and coolant temperature plausibility
+        { codes: [10, 13, 17, 123, 168], causeKeys: ['cooling'] },
+        // Knock sensors
+        { codes: [57, 59], causeKeys: ['knock'] },
+        // Idle control
+        { codes: [27, 53, 204, 211], causeKeys: ['idle'] },
+        // Misfires also make the idle rough
+        { codes: [...MISFIRE_CODES.keys()], causeKeys: ['idle', 'misfire'] },
+    ];
+
+    function raiseConfidence(confidence) {
+        return confidence.rank >= CONFIDENCE.HIGH.rank ? confidence
+            : confidence.rank === CONFIDENCE.MEDIUM.rank ? CONFIDENCE.HIGH : CONFIDENCE.MEDIUM;
+    }
+
+    /**
+     * Misfires the ECU has counted and stored. The log has no per-cylinder
+     * data, so this is the only place a misfire on a named cylinder can come
+     * from.
+     */
+    const StoredMisfireDetector = {
+        id: 'ecu.misfire',
+        title: 'Misfire stored in the ECU',
+        subSystem: SUBSYSTEM.IGNITION,
+        requires: [],
+        validStates: STATES,
+        minEvidenceSeconds: 0,
+        needsEcuSnapshot: true,
+
+        evaluate(summary, ctx) {
+            const ecu = summary.ecu;
+            const misfires = ecu.faults.filter(f => MISFIRE_CODES.has(f.code));
+            if (misfires.length === 0) return null;
+            const cylinders = [...new Set(misfires.map(f => MISFIRE_CODES.get(f.code)))].sort();
+            return {
+                detectorId: this.id,
+                title: 'Misfire stored: cylinder ' + cylinders.join(', '),
+                subSystem: this.subSystem,
+                severity: SEVERITY.HIGH,
+                confidence: CONFIDENCE.HIGH,
+                summary: 'The ECU has stored a misfire on cylinder ' + cylinders.join(', ') + ' (snapshot ' +
+                    snapshotAge(ecu) + '). ' + (cylinders.length === 1
+                        ? 'One cylinder points at that cylinder\'s coil, plug or injector.'
+                        : 'Several cylinders together point at something they share: fuel pressure, a vacuum ' +
+                          'leak or a crankshaft sensor.'),
+                evidence: misfires.map(f => evidence('Stored fault', f.code + ': ' + f.text)),
+                suggestedChecks: [
+                    'Swap the coil of the misfiring cylinder with a neighbour and see if the misfire follows it',
+                    'Inspect that cylinder\'s spark plug',
+                    'Check the injector of that cylinder for resistance and spray',
+                    'If several cylinders misfire, check fuel pressure and look for vacuum leaks',
+                ],
+                causeKey: 'misfire',
+            };
+        },
+    };
+
+    /**
+     * The ECU's learned fuel corrections, read from the snapshot.
+     *
+     * The additive adaptation is a fixed quantity of fuel added at every
+     * injection, so it matters most at idle and is judged as a share of the
+     * idle injection time this log measured. The multiplicative adaptation
+     * scales every injection, so it speaks to all loads. Together they tell a
+     * vacuum leak (additive, lean) from an airflow meter reading low or weak
+     * fuel pressure (multiplicative, lean), and a purge valve or dripping
+     * injector (additive, rich) from an engine rich everywhere.
+     */
+    /** 5 s at the default rate: enough for a mean of a quantity that barely moves at idle. */
+    const MIN_IDLE_INJECTION_SAMPLES = 25;
+
+    const AdaptationDetector = {
+        id: 'fuel.adaptation',
+        title: 'Learned fuel correction',
+        subSystem: SUBSYSTEM.FUEL,
+        requires: [],
+        validStates: STATES,
+        minEvidenceSeconds: 0,
+        needsEcuSnapshot: true,
+
+        evaluate(summary, ctx) {
+            const ecu = summary.ecu;
+            if (!ecu.adaptations) return null;
+            const profile = summary.profile;
+            const significant = profile.trimSignificantPct;
+            const mean = values => {
+                const known = values.filter(v => v !== null);
+                return known.length ? known.reduce((a, b) => a + b, 0) / known.length : null;
+            };
+            const stale = ecu.hoursFromDrive !== null && ecu.hoursFromDrive > ECU_SNAPSHOT_STALE_HOURS;
+            const confidence = stale ? CONFIDENCE.LOW : CONFIDENCE.MEDIUM;
+            const when = ' (snapshot ' + snapshotAge(ecu) + ')';
+            const findings = [];
+
+            // Idle injection time from this log, AC-off idle when there is one,
+            // since the compressor load lengthens it.
+            const acOff = summary.idleByAc && summary.idleByAc.get('off');
+            const offInjection = acOff ? acOff.get(CH.INJECTOR_PULSE) : null;
+            const idleInjection = (offInjection && offInjection.count >= MIN_IDLE_INJECTION_SAMPLES)
+                ? offInjection : ctx.across(CH.INJECTOR_PULSE, [ST.IDLE_WARM]);
+            const idleMs = idleInjection && idleInjection.count >= MIN_IDLE_INJECTION_SAMPLES ? idleInjection.mean : null;
+
+            const additiveMs = mean(ecu.adaptations.additiveMs);
+            if (additiveMs !== null && idleMs !== null && idleMs > 0) {
+                const pct = additiveMs / idleMs * 100;
+                if (Math.abs(pct) >= significant) {
+                    const lean = pct > 0;
+                    findings.push({
+                        detectorId: this.id,
+                        title: lean ? 'ECU has learned to add fuel at idle' : 'ECU has learned to remove fuel at idle',
+                        subSystem: this.subSystem,
+                        severity: Math.abs(pct) >= profile.trimRailPct ? SEVERITY.HIGH : SEVERITY.MODERATE,
+                        confidence,
+                        summary: 'The additive fuel adaptation is ' + ctx.fmt(additiveMs, 3) + ' ms per injection' +
+                            when + ', which is ' + ctx.fmt(Math.abs(pct), 0) + '% of the ' + ctx.fmt(idleMs, 2) +
+                            ' ms this engine injects at a warm idle. A fixed correction like this is what a ' +
+                            (lean ? 'vacuum leak after the airflow meter' : 'fuel source the ECU does not meter, ' +
+                                'such as a purge valve stuck open or a dripping injector,') +
+                            ' teaches the ECU, and it is invisible in the short-term trims once learned.',
+                        evidence: [
+                            evidence('Additive adaptation', ecu.adaptations.additiveMs
+                                .map((v, i) => 'bank ' + (i + 1) + ' ' + ctx.fmt(v, 3) + ' ms').join(', ')),
+                            evidence('Warm idle injection time (this log)', ctx.fmt(idleMs, 2) + ' ms'),
+                        ],
+                        suggestedChecks: lean ? [
+                            'Smoke-test the intake from the airflow meter to the head',
+                            'Check the crankcase vent (CCV) valve and hoses, a common M54 leak',
+                            'Check the intake boot, oil filler cap seal and dipstick O-ring',
+                        ] : [
+                            'Check the canister purge (tank vent) valve holds vacuum when unpowered',
+                            'Check the injectors for leaks',
+                        ],
+                        causeKey: lean ? 'lean-low-load' : 'rich',
+                    });
+                }
+            }
+
+            const multiplicative = ecu.adaptations.multiplicativePct;
+            const multiplicativePct = mean(multiplicative);
+            if (multiplicativePct !== null && Math.abs(multiplicativePct) >= significant) {
+                const lean = multiplicativePct > 0;
+                findings.push({
+                    detectorId: this.id,
+                    title: lean ? 'ECU has learned to add fuel at every load' : 'ECU has learned to remove fuel at every load',
+                    subSystem: this.subSystem,
+                    severity: Math.abs(multiplicativePct) >= profile.trimRailPct ? SEVERITY.HIGH : SEVERITY.MODERATE,
+                    confidence,
+                    summary: 'The multiplicative fuel adaptation is ' + ctx.fmt(multiplicativePct, 1) + '%' + when +
+                        ': every injection is ' + (lean ? 'lengthened' : 'shortened') + ' by that much before the ' +
+                        'short-term trim even starts. A proportional error like this comes from ' +
+                        (lean ? 'an airflow meter reading low or fuel pressure falling short.'
+                            : 'an airflow meter reading high or fuel pressure running high.'),
+                    evidence: [evidence('Multiplicative adaptation', multiplicative
+                        .map((v, i) => 'bank ' + (i + 1) + ' ' + ctx.fmt(v, 1) + '%').join(', '))],
+                    suggestedChecks: lean ? [
+                        'Clean or test the airflow meter',
+                        'Measure fuel pressure, and check the fuel filter',
+                    ] : [
+                        'Test the airflow meter',
+                        'Check the fuel pressure regulator',
+                    ],
+                    causeKey: lean ? 'lean-high-load' : 'rich',
+                });
+            }
+
+            if (multiplicative[0] !== null && multiplicative[1] !== null &&
+                Math.abs(multiplicative[0] - multiplicative[1]) >= profile.bankImbalancePct) {
+                const leanBank = multiplicative[0] > multiplicative[1] ? 1 : 2;
+                findings.push({
+                    detectorId: this.id,
+                    title: 'Learned fuel correction differs between banks',
+                    subSystem: this.subSystem,
+                    severity: SEVERITY.MODERATE,
+                    confidence,
+                    summary: 'Bank ' + leanBank + ' has learned ' + ctx.fmt(Math.abs(multiplicative[0] - multiplicative[1]), 1) +
+                        '% more fuel than the other' + when + '. A whole-engine fault would move both banks, so ' +
+                        'this points at something on bank ' + leanBank + ' alone.',
+                    evidence: [evidence('Multiplicative adaptation', 'bank 1 ' + ctx.fmt(multiplicative[0], 1) +
+                        '%, bank 2 ' + ctx.fmt(multiplicative[1], 1) + '%')],
+                    suggestedChecks: [
+                        'Check for an exhaust leak ahead of the bank ' + leanBank + ' oxygen sensor',
+                        'Swap the oxygen sensors between banks and see if the difference follows',
+                        'Test the bank ' + leanBank + ' injectors',
+                    ],
+                    causeKey: 'bank-' + leanBank,
+                });
+            }
+            return findings;
+        },
+    };
+
+    /** At least this far toward the low-octane map before it is worth mentioning. */
+    const RON_ADAPTATION_NOTABLE_PCT = 50;
+
+    /**
+     * How far the MS43 has moved from its high-octane ignition map toward its
+     * low-octane one. It moves when its knock sensors keep detecting knock, so
+     * this is the ECU's own long-run knock record, which no log column carries.
+     */
+    const OctaneAdaptationDetector = {
+        id: 'ignition.octane_adaptation',
+        title: 'ECU has retarded its ignition map for knock',
+        subSystem: SUBSYSTEM.IGNITION,
+        requires: [],
+        validStates: STATES,
+        minEvidenceSeconds: 0,
+        needsEcuSnapshot: true,
+
+        evaluate(summary, ctx) {
+            const ecu = summary.ecu;
+            const ron = ecu.ronAdaptationPct;
+            if (ron === null || ron < RON_ADAPTATION_NOTABLE_PCT) return null;
+            return {
+                detectorId: this.id,
+                title: this.title,
+                subSystem: this.subSystem,
+                severity: SEVERITY.LOW,
+                confidence: CONFIDENCE.MEDIUM,
+                summary: 'The ECU has moved ' + ctx.fmt(ron, 0) + '% of the way from its high-octane to its ' +
+                    'low-octane ignition map (snapshot ' + snapshotAge(ecu) + '). It does that after detecting ' +
+                    'knock repeatedly, and it costs power. Expected on low-octane fuel; on good fuel, look for ' +
+                    'why the engine knocks.',
+                evidence: [evidence('Octane (RON) adaptation', ctx.fmt(ron, 0) + '% toward the low-octane map')],
+                suggestedChecks: [
+                    'Run a few tanks of the highest-octane fuel available and read it again',
+                    'Check spark plugs and look for carbon build-up',
+                    'Check intake air temperature in hot weather',
+                ],
+                causeKey: 'knock',
+            };
+        },
+    };
+
+    /**
+     * Ties stored fault codes to the findings they support, after detection.
+     *
+     * A code that backs up something the log shows raises that finding's
+     * confidence and joins its evidence: two independent sources agreeing is
+     * the strongest diagnosis there is. A code nothing in the log speaks to is
+     * still listed, on its own, so the snapshot never hides a stored fault.
+     */
+    function applyFaultCodes(result) {
+        const ecu = result.summary.ecu;
+        if (!ecu || ecu.faults.length === 0) return result;
+        const unexplained = [];
+        for (const fault of ecu.faults) {
+            const link = FAULT_LINKS.find(l => l.codes.includes(fault.code));
+            const supported = link
+                ? result.findings.filter(f => link.causeKeys.includes(f.causeKey) && f.detectorId !== StoredMisfireDetector.id)
+                : [];
+            for (const finding of supported) {
+                finding.evidence.push(evidence('Stored fault code', fault.code + ': ' + fault.text));
+                finding.confidence = raiseConfidence(finding.confidence);
+            }
+            if (supported.length === 0 && !MISFIRE_CODES.has(fault.code)) unexplained.push(fault);
+        }
+        if (unexplained.length) {
+            result.findings.push({
+                detectorId: 'ecu.stored_faults',
+                title: unexplained.length === 1 ? 'Fault code stored in the ECU' : unexplained.length + ' fault codes stored in the ECU',
+                subSystem: SUBSYSTEM.SENSORS,
+                severity: SEVERITY.MODERATE,
+                confidence: CONFIDENCE.HIGH,
+                summary: 'The ECU fault memory (snapshot ' + snapshotAge(ecu) + ') holds ' +
+                    (unexplained.length === 1 ? 'a fault' : 'faults') + ' that nothing in this log speaks to ' +
+                    'either way. ' + (unexplained.length === 1 ? 'It' : 'They') +
+                    ' may be old, intermittent, or outside what the log records.',
+                evidence: unexplained.map(f => evidence('Stored fault code', f.code + ': ' + f.text)),
+                suggestedChecks: [
+                    'Look up each code and check its wiring and component',
+                    'Clear the codes, drive, and read them again to see which come back',
+                ],
+                causeKey: 'stored-faults',
+            });
+        }
+        return result;
+    }
+
+    // ── Change over time ──────────────────────────────────────────────────
+
+    /**
+     * Measurements worth comparing from one drive to the next, each taken
+     * under conditions that repeat (warm idle with the AC off, steady cruise),
+     * so a change means the car changed rather than the drive.
+     *
+     * minChange is the smallest move worth mentioning. `up` and `down` give the
+     * cause a move in that direction points at, or null when a move that way is
+     * no concern.
+     */
+    const TREND_METRICS = [
+        { key: 'idleTrim', subSystem: SUBSYSTEM.FUEL, label: 'Warm idle fuel trim', unit: '%', decimals: 1, minChange: 5, up: 'lean-low-load', down: 'rich' },
+        { key: 'lowLoadTrim', subSystem: SUBSYSTEM.FUEL, label: 'Low-load fuel trim', unit: '%', decimals: 1, minChange: 5, up: 'lean-low-load', down: 'rich' },
+        { key: 'highLoadTrim', subSystem: SUBSYSTEM.FUEL, label: 'High-load fuel trim', unit: '%', decimals: 1, minChange: 5, up: 'lean-high-load', down: 'rich' },
+        { key: 'bankDelta', subSystem: SUBSYSTEM.FUEL, label: 'Bank 1 minus bank 2 fuel trim', unit: '%', decimals: 1, minChange: 4, up: 'bank-1', down: 'bank-2' },
+        { key: 'idleRpm', subSystem: SUBSYSTEM.IDLE, label: 'Warm idle speed', unit: ' rpm', decimals: 0, minChange: 75, up: 'idle', down: 'idle' },
+        { key: 'idleRoughness', subSystem: SUBSYSTEM.IDLE, label: 'Idle roughness', unit: ' rpm', decimals: 0, minChange: 25, up: 'idle', down: null },
+        // Opening less to hold the same idle means air is arriving some other way.
+        { key: 'idleValve', subSystem: SUBSYSTEM.IDLE, label: 'Idle air valve opening', unit: '%', decimals: 1, minChange: 8, up: 'idle', down: 'lean-low-load' },
+        { key: 'cruiseCoolant', subSystem: SUBSYSTEM.COOLING, label: 'Coolant temperature at cruise', unit: ' degC', decimals: 1, minChange: 6, up: 'cooling', down: 'cooling' },
+        { key: 'runningVoltage', subSystem: SUBSYSTEM.ELECTRICAL, label: 'Charging voltage', unit: ' V', decimals: 2, minChange: 0.4, up: 'charging', down: 'charging' },
+        { key: 'intakeCamSpan', subSystem: SUBSYSTEM.IGNITION, label: 'Intake cam range', unit: ' deg', decimals: 1, minChange: 8, up: null, down: 'cam-timing' },
+        { key: 'exhaustCamSpan', subSystem: SUBSYSTEM.IGNITION, label: 'Exhaust cam range', unit: ' deg', decimals: 1, minChange: 8, up: null, down: 'cam-timing' },
+    ];
+
+    /** Earlier drives needed before "typical" means anything. */
+    const MIN_TREND_DRIVES = 3;
+    /** Only the most recent drives set the baseline, so it follows repairs. */
+    const MAX_TREND_DRIVES = 10;
+    /**
+     * A change must also stand clear of how much the metric already varies
+     * between drives, measured as this many median absolute deviations.
+     */
+    const TREND_MAD_FACTOR = 3;
+
+    /** Both banks' trim in one cell, merged as the whole-engine rules merge it. */
+    function cellTrim(summary, cell) {
+        if (!cell) return null;
+        const parts = [cell.get(CH.LAMBDA_INT_1)];
+        if (summary.isUsable(CH.LAMBDA_INT_2)) parts.push(cell.get(CH.LAMBDA_INT_2));
+        return mergeAccums(CH.LAMBDA_INT_1, parts);
+    }
+
+    /**
+     * Reduces a drive to the few numbers TREND_METRICS compares. Small enough
+     * to keep one per drive for years; the app stores it and hands earlier
+     * ones back as options.history.
+     */
+    function buildDriveRecord(summary, meta) {
+        const ctx = new DetectorContext(summary);
+        const metrics = {};
+        const put = (key, accum, value) => {
+            if (!accum || accum.count < MIN_CELL_SAMPLES) return;
+            const v = value === undefined ? accum.mean : value;
+            if (v !== null && Number.isFinite(v)) metrics[key] = { value: v, n: accum.count };
+        };
+
+        // Idle with the AC off when the log knows the AC state, since the
+        // compressor load moves every idle figure. A drive that idled only
+        // with the AC on contributes no idle figures at all.
+        const idle = summary.idleByAc && summary.idleByAc.size
+            ? summary.idleByAc.get('off') || null
+            : summary.byState.get(ST.IDLE_WARM) || null;
+        if (idle) {
+            put('idleTrim', cellTrim(summary, idle));
+            put('idleRpm', idle.get(CH.RPM));
+            put('idleRoughness', idle.get(CH.RPM_ROUGHNESS));
+            if (summary.isUsable(CH.IACV)) put('idleValve', idle.get(CH.IACV));
+        }
+        if (summary.isUsable(CH.LAMBDA_INT_1) && summary.isUsable(CH.ENGINE_LOAD)) {
+            const low = mergedTrim(summary, ctx, [ST.IDLE_WARM, ST.CRUISE_STEADY], LOW_LOAD_BINS);
+            if (low) put('lowLoadTrim', low, low.median);
+            const high = mergedTrim(summary, ctx, [ST.CRUISE_STEADY, ST.WOT_PULL], HIGH_LOAD_BINS);
+            if (high) put('highLoadTrim', high, high.median);
+        }
+        if (summary.isUsable(CH.LAMBDA_INT_1) && summary.isUsable(CH.LAMBDA_INT_2)) {
+            const b1 = ctx.across(CH.LAMBDA_INT_1, WARM_STEADY);
+            const b2 = ctx.across(CH.LAMBDA_INT_2, WARM_STEADY);
+            if (b1 && b2 && b2.count >= MIN_CELL_SAMPLES) put('bankDelta', b1, b1.mean - b2.mean);
+        }
+        if (summary.isUsable(CH.COOLANT_TEMP)) put('cruiseCoolant', ctx.across(CH.COOLANT_TEMP, [ST.CRUISE_STEADY]));
+        if (summary.isUsable(CH.SYSTEM_VOLTAGE)) {
+            put('runningVoltage', ctx.across(CH.SYSTEM_VOLTAGE, STATES.filter(s => s !== ST.ENGINE_OFF)));
+        }
+        // A cam range only means something on a drive that used a range of engine speeds.
+        const rpm = ctx.across(CH.RPM, WARM_STATES);
+        if (rpm && rpm.quantile(0.95) - rpm.quantile(0.05) >= CAM_MIN_RPM_SPREAD) {
+            for (const [key, channel] of [['intakeCamSpan', CH.CAM_ADVANCE], ['exhaustCamSpan', CH.EXHAUST_CAM]]) {
+                if (!summary.isUsable(channel)) continue;
+                const cam = ctx.across(channel, WARM_STATES);
+                if (cam) put(key, cam, cam.max - cam.min);
+            }
+        }
+
+        return {
+            version: 1,
+            logName: (meta && meta.logName) || null,
+            logStartedAt: (meta && meta.logStartedAt) || null,
+            runningSeconds: summary.timeline.runningSeconds,
+            metrics,
+        };
+    }
+
+    function medianOf(values) {
+        const sorted = values.slice().sort((a, b) => a - b);
+        const mid = sorted.length >> 1;
+        return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+
+    /** Earlier drives to compare against: never this one, never a later one, newest first. */
+    function earlierDrives(record, history) {
+        const started = Date.parse(record.logStartedAt);
+        return (Array.isArray(history) ? history : [])
+            .filter(r => r && r.metrics && typeof r.metrics === 'object')
+            .filter(r => !record.logName || r.logName !== record.logName)
+            .filter(r => Number.isNaN(started) || Number.isNaN(Date.parse(r.logStartedAt)) ||
+                Date.parse(r.logStartedAt) < started)
+            .sort((a, b) => (Date.parse(b.logStartedAt) || 0) - (Date.parse(a.logStartedAt) || 0))
+            .slice(0, MAX_TREND_DRIVES);
+    }
+
+    /**
+     * This drive against this car's own recent normal.
+     *
+     * A fixed limit has to suit every car, so it is set wide; a car's own
+     * history is narrow. An idle trim that has crept from +1% to +6% is still
+     * inside any fixed limit and is exactly how a vacuum leak starts.
+     */
+    const TrendDetector = {
+        id: 'trend.drift',
+        title: 'Changed since earlier drives',
+        subSystem: SUBSYSTEM.SENSORS,
+        requires: [],
+        validStates: STATES,
+        minEvidenceSeconds: 0,
+
+        evaluate(summary, ctx) {
+            const record = summary.record;
+            if (!record) return null;
+            const past = earlierDrives(record, summary.history);
+            const findings = [];
+            for (const metric of TREND_METRICS) {
+                const now = record.metrics[metric.key];
+                if (!now) continue;
+                const before = past.map(r => r.metrics[metric.key])
+                    .filter(m => m && Number.isFinite(m.value) && m.n >= MIN_CELL_SAMPLES)
+                    .map(m => m.value);
+                if (before.length < MIN_TREND_DRIVES) continue;
+
+                const typical = medianOf(before);
+                const spread = medianOf(before.map(v => Math.abs(v - typical)));
+                const change = now.value - typical;
+                if (Math.abs(change) < metric.minChange || Math.abs(change) < TREND_MAD_FACTOR * spread) continue;
+                const causeKey = change > 0 ? metric.up : metric.down;
+                if (!causeKey) continue;
+
+                const f = v => ctx.fmt(v, metric.decimals) + metric.unit;
+                findings.push({
+                    detectorId: 'trend.' + metric.key,
+                    title: metric.label + ' has ' + (change > 0 ? 'risen' : 'fallen') + ' since earlier drives',
+                    subSystem: metric.subSystem,
+                    severity: Math.abs(change) >= 2 * metric.minChange ? SEVERITY.MODERATE : SEVERITY.LOW,
+                    confidence: before.length >= 5 ? CONFIDENCE.MEDIUM : CONFIDENCE.LOW,
+                    summary: metric.label + ' was ' + f(now.value) + ' on this drive, against a typical ' +
+                        f(typical) + ' over the previous ' + before.length + ' drives. That is this car moving ' +
+                        'away from its own normal, which is often the first sign of a fault, before any fixed ' +
+                        'limit is reached.',
+                    evidence: [
+                        evidence('This drive', f(now.value)),
+                        evidence('Typical before', f(typical) + ' (earlier drives ranged ' + f(Math.min(...before)) +
+                            ' to ' + f(Math.max(...before)) + ')'),
+                    ],
+                    suggestedChecks: ['Compare with the other findings in this report: a drift often explains them'],
+                    causeKey,
+                });
+            }
+            return findings;
         },
     };
 
@@ -2766,6 +3575,7 @@
         VacuumLeakDetector,
         FuelSupplyDetector,
         RichMixtureDetector,
+        RichLowLoadDetector,
         BankImbalanceDetector,
         // Cooling
         OverheatDetector,
@@ -2775,11 +3585,19 @@
         KnockCorrectionDetector,
         KnockRetardDetector,
         CamTimingDetector,
+        ExhaustCamTimingDetector,
         // Electrical
         ChargingSystemDetector,
         // Idle and air
         IdleQualityDetector,
         IntakeHeatSoakDetector,
+        // ECU (the last three only with an ECU snapshot)
+        WarningLampDetector,
+        StoredMisfireDetector,
+        AdaptationDetector,
+        OctaneAdaptationDetector,
+        // Change over time (only with earlier drives in options.history)
+        TrendDetector,
         // Sensors
         StuckSensorDetector,
     ];
@@ -2797,6 +3615,10 @@
         const skipped = [];
 
         for (const detector of detectors) {
+            // Silent rather than listed as not checked: most logs come without
+            // a snapshot, and the caller knows whether it supplied one.
+            if (detector.needsEcuSnapshot && !summary.ecu) continue;
+
             const missing = detector.requires.filter(c => !summary.isUsable(c));
             if (missing.length > 0) {
                 skipped.push({
@@ -2836,8 +3658,10 @@
             }
 
             try {
+                // A detector answering several questions returns a list.
                 const finding = detector.evaluate(summary, ctx);
-                if (finding) findings.push(finding);
+                if (Array.isArray(finding)) findings.push(...finding.filter(Boolean));
+                else if (finding) findings.push(finding);
             } catch (error) {
                 skipped.push({
                     detectorId: detector.id,
@@ -2914,6 +3738,10 @@
             highLoadThreshold: summary.profile.highLoadThreshold,
             loadScaleCalibrated: !!summary.loadScale,
             loadScaleEvidenceSeconds: summary.loadScale ? summary.loadScale.evidenceSeconds : 0,
+            profileName: summary.profile.name,
+            compressorSeconds: summary.isUsable(CH.AC_COMPRESSOR) ? summary.compressorSeconds : null,
+            ecu: summary.ecu || null,
+            historyDrives: summary.record ? earlierDrives(summary.record, summary.history).length : 0,
         };
 
         return {
@@ -2921,6 +3749,7 @@
             skipped: report.skipped,
             overview,
             summary,
+            record: summary.record || null,
             get worstSeverity() { return this.groups.length ? this.groups[0].severity : null; },
             get isClean() { return this.groups.every(g => g.severity.rank < SEVERITY.MODERATE.rank); },
         };
@@ -2971,10 +3800,23 @@
         lines.push('Full load         : ' + o.highLoadThreshold.toFixed(0) + ' mg/str ' +
             (o.loadScaleCalibrated
                 ? '(learned from this drive, ' + o.loadScaleEvidenceSeconds.toFixed(0) + 's at full throttle)'
-                : '(generic - no full-throttle driving in this log to learn from)'));
+                : '(' + (o.profileName && o.profileName !== DEFAULT_PROFILE.name ? 'vehicle profile' : 'generic') +
+                  ' - no full-throttle driving in this log to learn from)'));
         if (o.staleSeconds > 0) {
             lines.push('Frozen feed       : ' + o.staleSeconds.toFixed(1) + 's excluded in ' +
                 o.staleSpanCount + ' stretch(es) - the logger was repeating stale values');
+        }
+        if (o.compressorSeconds !== null && o.compressorSeconds !== undefined) {
+            lines.push('AC compressor     : ran ' + mmss(o.compressorSeconds) + ' of ' + mmss(o.runningSeconds) +
+                ' running');
+        }
+        if (o.ecu) {
+            lines.push('ECU snapshot      : ' + snapshotAge(o.ecu) + (o.ecu.dme ? ', DME ' + o.ecu.dme : '') +
+                ', ' + o.ecu.faults.length + ' stored fault(s)' +
+                (o.ecu.adaptations ? ', fuel adaptations read' : ''));
+        }
+        if (o.historyDrives > 0) {
+            lines.push('Earlier drives    : ' + o.historyDrives + ' compared for changes');
         }
         lines.push('');
         lines.push('Time in each operating state:');
@@ -3042,7 +3884,11 @@
      *
      * @param text     the whole CSV as a string.
      * @param options  { profile, detectors, onProgress } — onProgress receives
-     *                 0..1 across both passes.
+     *                 0..1 across both passes. Optionally also:
+     *                 logName, logStartedAt (ISO-8601) - identify the drive;
+     *                 ecu - an ECU snapshot near the drive (normalizeEcuSnapshot);
+     *                 history - records of earlier drives (buildDriveRecord),
+     *                 as returned in report.record by previous analyses.
      */
     function analyze(text, options) {
         const opts = options || {};
@@ -3062,7 +3908,9 @@
         const runPass = (calibration, scale) => {
             const health = new ChannelHealthTracker();
             const resampler = new Resampler(resampleIntervalMs(profile));
-            const segmenter = new StateSegmenter(profile, calibration ? calibration.closedThrottlePct : null);
+            const segmenter = new StateSegmenter(profile,
+                calibration ? calibration.closedThrottlePct : null, undefined,
+                calibration ? calibration.closedPedalPct : null);
             const builder = new SummaryBuilder(profile, calibration ? calibration.sparkMap : null);
 
             // A frozen feed can only be recognised after it has been frozen for
@@ -3120,8 +3968,12 @@
         const pass2 = runPass(pass1.calibration, f => 2 / 3 + f / 3);
         if (onProgress) onProgress(1);
 
-        pass2.summary.loadScale = loadScale;
-        return rankReport(runDetectors(pass2.summary, detectors));
+        const summary = pass2.summary;
+        summary.loadScale = loadScale;
+        summary.ecu = normalizeEcuSnapshot(opts.ecu, opts.logStartedAt);
+        summary.record = buildDriveRecord(summary, opts);
+        summary.history = Array.isArray(opts.history) ? opts.history : [];
+        return rankReport(applyFaultCodes(runDetectors(summary, detectors)));
     }
 
 
@@ -3167,7 +4019,14 @@
                 highLoadThreshold: o.highLoadThreshold,
                 loadScaleCalibrated: o.loadScaleCalibrated,
                 loadScaleEvidenceSeconds: o.loadScaleEvidenceSeconds,
+                profileName: o.profileName,
+                compressorSeconds: o.compressorSeconds,
+                // Already plain: built from JSON by normalizeEcuSnapshot.
+                ecu: o.ecu,
+                historyDrives: o.historyDrives,
             },
+            // What the caller keeps to pass back as options.history next time.
+            record: report.record,
             groups: report.groups.map(g => ({
                 primary: plainFinding(g.primary),
                 related: g.related.map(plainFinding),
@@ -3193,6 +4052,7 @@
         Accum, mergeAccums, ChannelStats, SparkMap, EventCollector, SummaryBuilder,
         StaleFeedTracker, staleFilter, staleSeconds, SustainedMinTracker,
         calibrateLoadScale, peekHeader,
+        normalizeEcuSnapshot, buildDriveRecord, TREND_METRICS, M54_MS43_OVERRIDES,
         DetectorContext, BUILT_IN_DETECTORS, runDetectors, rankReport,
         readCsv, resolveChannel, aliasRank, normalizeHeader,
         rpmBinOf, loadBinOf,

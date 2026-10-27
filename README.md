@@ -206,7 +206,31 @@ reported twice at two different confidences.
 
 Worth logging if your software offers them: knock correction, cam advance
 (AVCS/VANOS/VVT), both bank fuel trims, radiator temp, battery/system voltage,
-oil temp, fuel pressure.
+oil temp, fuel pressure. Also used when present: the accelerator pedal (on an
+MS43 the throttle plate stays shut through light driving, so only the pedal
+shows the driver asking for power), the exhaust cam, the AC compressor state
+(idle is judged with and without its load), the electric fan, and the check
+engine and EML lamps.
+
+An engine the analyser knows gets its own limits: a vehicle record naming the
+M54 engine or the MS43 ECU allows for the map thermostat running the coolant at
+up to about 110 degC by design.
+
+### Beyond one log
+
+`analyze(text, options)` takes two more inputs, for an app that keeps them
+(Bimmer Cockpit does):
+
+- **`ecu`** — a snapshot of what the ECU has stored, read near the drive: the
+  fault memory, the learned fuel adaptations and the octane adaptation (see
+  `normalizeEcuSnapshot`). Stored misfires name their cylinder; a stored code
+  that explains a finding raises its confidence; and the adaptations show a
+  fault the ECU has already learned around, which the short-term trims in the
+  log no longer can.
+- **`history`** — the `record` of earlier drives, as returned in each report.
+  The drive is compared with this car's own recent normal (idle trim, idle
+  speed and roughness, low- and high-load trim, bank split, cruise coolant,
+  charging voltage, cam range), which moves well before a fixed limit trips.
 
 ## How It Works
 

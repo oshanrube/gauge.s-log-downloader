@@ -11,9 +11,10 @@
 importScripts('analyzer.js');
 
 self.onmessage = event => {
-    const text = event.data && event.data.text;
+    const data = event.data || {};
+    const text = data.text;
     // Thresholds from the shared vehicle record, when the app had any.
-    const profile = (event.data && event.data.profile) || undefined;
+    const profile = data.profile || undefined;
     if (typeof text !== 'string') {
         self.postMessage({ type: 'error', message: 'no log text supplied' });
         return;
@@ -23,8 +24,14 @@ self.onmessage = event => {
         // 2000 rows, which on a large log is far more messages than the bar
         // can usefully show.
         let lastPercent = -1;
+        // The ECU snapshot near this drive and the records of earlier drives,
+        // for an app that keeps them (see analyze() in analyzer.js).
         const report = self.CarDoctor.analyze(text, {
             profile,
+            logName: data.logName,
+            logStartedAt: data.logStartedAt,
+            ecu: data.ecu,
+            history: data.history,
             onProgress: fraction => {
                 const percent = Math.round(fraction * 100);
                 if (percent === lastPercent) return;

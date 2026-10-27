@@ -30,9 +30,15 @@ const HEADER =
     'knock correction (deg),cam advance (deg)';
 
 class SyntheticLog {
-    constructor(seed = 7) {
+    /**
+     * @param extraHeaders columns beyond HEADER, filled per phase from
+     *   opts.extras ({ header: value, or (rowIndex) => value }) and left
+     *   empty where a phase gives none - as a logger leaves a value it lacks.
+     */
+    constructor(seed = 7, extraHeaders = []) {
         this.random = seededRandom(seed);
-        this.rows = [HEADER];
+        this.extraHeaders = extraHeaders;
+        this.rows = [[HEADER, ...extraHeaders].join(',')];
         this.timeMs = 0;
         this.intervalMs = 66;
     }
@@ -55,6 +61,7 @@ class SyntheticLog {
             tpsOffset = 0,
             knockCorrection = 0,
             camAdvance = 20,
+            extras = {},
         } = opts;
 
         const samples = Math.trunc(seconds * 1000 / this.intervalMs);
@@ -89,6 +96,10 @@ class SyntheticLog {
                 iacv.toFixed(1),
                 knockCorrection.toFixed(2),
                 (camAdvance + (this.random() - 0.5) * 0.6).toFixed(2),
+                ...this.extraHeaders.map(h => {
+                    const v = typeof extras[h] === 'function' ? extras[h](i) : extras[h];
+                    return v === undefined ? '' : String(v);
+                }),
             ].join(','));
             this.timeMs += this.intervalMs;
         }
