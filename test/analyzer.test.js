@@ -736,6 +736,17 @@ test('an exhaust cam that never moves is reported on its own', () => {
     assert.ok(!has(report, 'ignition.cam_stuck'), 'the intake cam swept normally');
 });
 
+test('cams in BMW\'s crankshaft angles are read, not rejected as implausible', () => {
+    // How the MS43 reports them: intake about 90-127 deg, exhaust about -106 to -83.
+    const exhaust = i => (-100 + Math.sin(i / 7) * 0.3).toFixed(2);
+    const report = run(new SyntheticLog(7, ['Exhaust cam (deg)'])
+        .phase({ seconds: 200, rpm: 850, load: 95, tps: 0, speed: 0, coolant: 92, camAdvance: 125, extras: { 'Exhaust cam (deg)': exhaust } })
+        .phase({ seconds: 200, rpm: 2400, load: 200, tps: 25, speed: 80, coolant: 92, camAdvance: 125, extras: { 'Exhaust cam (deg)': exhaust } })
+        .phase({ seconds: 200, rpm: 3800, load: 460, tps: 70, speed: 120, coolant: 95, camAdvance: 125, extras: { 'Exhaust cam (deg)': exhaust } }));
+    assert.ok(has(report, 'ignition.cam_stuck'), 'got: ' + titles(report));
+    assert.ok(has(report, 'ignition.exhaust_cam_stuck'), 'got: ' + titles(report));
+});
+
 // ── Warning lamps ────────────────────────────────────────────────────────
 
 test('a check engine lamp lit while driving is reported', () => {
@@ -858,6 +869,57 @@ test('stored misfires name their cylinders', () => {
     assert.ok(!has(report, 'ecu.stored_faults'));
 });
 
+test('misfire counters name their cylinders before a fault is stored', () => {
+    const report = withSnapshot(new SyntheticLog().healthyDrive(), snapshot({
+        misfire: { counts: [0, 0, 0, 0, 14, 0], roughness: [0.01, 0, 0, 0, 0.9, 0] },
+    }));
+    const f = finding(report, 'ecu.misfire');
+    assert.ok(f, 'got: ' + titles(report));
+    assert.strictEqual(f.title, 'Misfires counted: cylinder 5');
+    assert.strictEqual(f.severity, SEVERITY.MODERATE);
+    assert.ok(f.evidence.some(e => e.label === 'Misfire counter, cylinder 5' && e.value.startsWith('14')));
+});
+
+test('a stored misfire and the counters are one finding', () => {
+    const report = withSnapshot(new SyntheticLog().healthyDrive(), snapshot({
+        faults: [{ code: 238, text: 'Misfire Cyl 1', frequency: 4, presentNow: true }],
+        misfire: { counts: [9, 0, 0, 0, 0, 0], roughness: [0.5, 0, 0, 0, 0, 0] },
+    }));
+    const all = report.groups.flatMap(g => g.all).filter(x => x.detectorId === 'ecu.misfire');
+    assert.strictEqual(all.length, 1);
+    assert.strictEqual(all[0].title, 'Misfire stored: cylinder 1');
+    assert.strictEqual(all[0].severity, SEVERITY.HIGH);
+    assert.ok(all[0].evidence.some(e => e.value === '238: Misfire Cyl 1 (present now; occurred 4x)'));
+});
+
+test('zero misfire counters add nothing', () => {
+    const report = withSnapshot(new SyntheticLog().healthyDrive(), snapshot({
+        misfire: { counts: [0, 0, 0, 0, 0, 0], roughness: [0, 0, 0, 0, 0, 0] },
+    }));
+    assert.ok(!has(report, 'ecu.misfire'));
+    assert.ok(report.overview.ecu.misfire);
+});
+
+test('what the ECU stored with a fault joins its evidence', () => {
+    const report = withSnapshot(new SyntheticLog().healthyDrive(), snapshot({
+        faults: [{ code: 125, text: 'Activation Electric Fan', frequency: 2, presentNow: false,
+            types: ['Short circuit to ground or open circuit'], conditions: ['Engine speed 800.0 rpm'] }],
+    }));
+    const f = finding(report, 'ecu.stored_faults');
+    assert.strictEqual(f.evidence[0].value, '125: Activation Electric Fan (not present now; occurred 2x; ' +
+        'Short circuit to ground or open circuit; stored at Engine speed 800.0 rpm)');
+});
+
+test('the learned idle air backs up a rough idle', () => {
+    const log = new SyntheticLog(7, ['Compressor'])
+        .phase({ seconds: 200, rpm: 800, rpmJitter: 300, load: 115, tps: 0, speed: 0, coolant: 92, extras: { Compressor: 1 } })
+        .phase({ seconds: 200, rpm: 780, rpmJitter: 300, load: 95, tps: 0, speed: 0, coolant: 92, extras: { Compressor: 0 } });
+    const report = withSnapshot(log, snapshot({ idleAdaptationPct: { neutral: -4.2, inGear: -3, ac: 1.5 } }));
+    const f = finding(report, 'idle.unstable');
+    assert.ok(f.evidence.some(e => e.label === 'Learned idle air (ECU)' &&
+        e.value === 'neutral -4.2%, in gear -3.0%, AC on +1.5%'));
+});
+
 test('a stored code backs up the finding it explains, and an unrelated one is listed', () => {
     const leak = load => Math.min(16, 14 * (100 / load));
     const log = new SyntheticLog()
@@ -926,7 +988,18 @@ test('junk in a snapshot is dropped rather than believed', () => {
     assert.deepStrictEqual(ecu.adaptations.additiveMs, [null, 0.1]);
     assert.deepStrictEqual(ecu.adaptations.multiplicativePct, [null, null]);
     assert.strictEqual(ecu.ronAdaptationPct, null);
+    assert.strictEqual(ecu.misfire, null);
+    assert.strictEqual(ecu.idleAdaptationPct, null);
     assert.strictEqual(CarDoctor.normalizeEcuSnapshot(null), null);
+    const odd = CarDoctor.normalizeEcuSnapshot({
+        misfire: { counts: [1, 2, 3], roughness: [] }, idleAdaptationPct: { neutral: 'x' },
+        digital: { acRequest: true, compressorRelay: 'yes' }, faults: [{ code: 1, types: [3, 'Open'], frequency: 'x' }],
+    }, DRIVE_START);
+    assert.strictEqual(odd.misfire, null, 'counters must cover all six cylinders');
+    assert.strictEqual(odd.idleAdaptationPct, null);
+    assert.deepStrictEqual(odd.digital, { acRequest: true });
+    assert.deepStrictEqual(odd.faults[0].types, ['Open']);
+    assert.strictEqual(odd.faults[0].frequency, null);
 });
 
 // ── Change over time ─────────────────────────────────────────────────────

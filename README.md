@@ -222,11 +222,13 @@ up to about 110 degC by design.
 (Bimmer Cockpit does):
 
 - **`ecu`** — a snapshot of what the ECU has stored, read near the drive: the
-  fault memory, the learned fuel adaptations and the octane adaptation (see
-  `normalizeEcuSnapshot`). Stored misfires name their cylinder; a stored code
-  that explains a finding raises its confidence; and the adaptations show a
-  fault the ECU has already learned around, which the short-term trims in the
-  log no longer can.
+  fault memory (with how often each fault occurred, whether it is present now,
+  and what the ECU stored with it), the learned fuel, idle-air and octane
+  adaptations, and the per-cylinder misfire counters (see
+  `normalizeEcuSnapshot`). Stored or counted misfires name their cylinder; a
+  stored code that explains a finding raises its confidence; the learned idle
+  air joins a rough-idle finding; and the adaptations show a fault the ECU has
+  already learned around, which the short-term trims in the log no longer can.
 - **`history`** — the `record` of earlier drives, as returned in each report.
   The drive is compared with this car's own recent normal (idle trim, idle
   speed and roughness, low- and high-load trim, bank split, cruise coolant,
