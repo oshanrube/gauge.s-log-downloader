@@ -649,3 +649,336 @@ test('junk in the ambient box is ignored rather than believed', () => {
             `"${ambient}" must not become a temperature`);
     }
 });
+
+// ── Bimmer Cockpit (MS43 over K-line) logs ───────────────────────────────
+
+const COCKPIT_HEADER =
+    'Time (ms),Engine speed (rpm),Vehicle speed (km/h),Throttle position (%),Accelerator pedal (%),' +
+    'Engine load (mg/stroke),Mass airflow (kg/h),Ignition advance (deg),Injection time (ms),' +
+    'Intake air temp (C),Coolant temp (C),Oil temp (C),Radiator temp (C),IACV (%),Idle actuator (%),' +
+    'Intake cam (deg),Exhaust cam (deg),Lambda int 1 (%),Lambda int 2 (%),Knock sensor 1 (V),' +
+    'Knock sensor 2 (V),Battery voltage (V),System voltage (V),Fuel rate (l/h),Torque (%),Torque loss (%),' +
+    'ECU fan (%),O2 heater pre 1 (%),O2 heater pre 2 (%),O2 heater post 1 (%),O2 heater post 2 (%),' +
+    'Evaporator temp (C),Cabin temp (C),AC pressure (bar),AC switch,Compressor,Blower,Check engine,EML';
+const COCKPIT_ROW =
+    '36,797,0,0,0,96,14.6,5.6,1.86,40,97,87,81,0.2,34,30,-45,-13,-10.8,0.38,0.25,14,14,0.44,11,7.4,' +
+    '5,198,198,198,198,14.5,25.6,,1,0,2,0,0';
+
+test('every engine column in a Bimmer Cockpit log is recognised', () => {
+    let sample = null;
+    const stats = readCsv(COCKPIT_HEADER + '\n' + COCKPIT_ROW + '\n', s => { sample = s; });
+    for (const expected of [
+        CH.PEDAL, CH.EXHAUST_CAM, CH.CAM_ADVANCE, CH.AC_COMPRESSOR, CH.CHECK_ENGINE, CH.EML, CH.ECU_FAN,
+        CH.IACV, CH.INJECTOR_PULSE, CH.LAMBDA_INT_1, CH.LAMBDA_INT_2, CH.RADIATOR_TEMP,
+    ]) {
+        assert.ok(stats.header.channels.has(expected), `${expected.name} was not resolved`);
+    }
+    // Only the module's own climate columns and values no rule reads are left over.
+    assert.deepStrictEqual(stats.header.unmapped.sort(), [
+        'AC pressure (bar)', 'AC switch', 'Blower', 'Cabin temp (C)', 'Evaporator temp (C)',
+        'Knock sensor 1 (V)', 'Knock sensor 2 (V)', 'O2 heater post 1 (%)', 'O2 heater post 2 (%)',
+        'O2 heater pre 1 (%)', 'O2 heater pre 2 (%)', 'Torque (%)', 'Torque loss (%)',
+    ]);
+    // The MS43's "IACV" reads 0.2% at idle; the idle actuator is the valve.
+    assert.strictEqual(sample.get(CH.IACV), 34);
+});
+
+test('a lamp that stayed off all drive is evidence, not a dead input', () => {
+    const tracker = new ChannelHealthTracker();
+    for (let i = 0; i < 100; i++) tracker.observe(CH.CHECK_ENGINE, 0);
+    assert.strictEqual(tracker.finish().get(CH.CHECK_ENGINE).status, STATUS_OK);
+});
+
+// ── Accelerator pedal ────────────────────────────────────────────────────
+
+function pedalSample(timeMs, rpm, load, tps, pedal, speed) {
+    const sample = driveSample(timeMs, rpm, load, tps, speed, 92);
+    sample.values[CH.PEDAL.ordinal] = pedal;
+    return sample;
+}
+
+test('a pressed pedal is not overrun, even with the throttle plate shut', () => {
+    // An MS43 feeds light-load air through the idle actuator with the plate
+    // shut, so the throttle reads 0% and load is low while the car cruises.
+    const segmenter = new StateSegmenter(DEFAULT_PROFILE);
+    let overrun = 0;
+    for (let i = 0; i < 200; i++) {
+        if (segmenter.analyze(pedalSample(i * 200, 1600, 70, 0, 8, 50)).state === ST.DECEL_OVERRUN) overrun++;
+    }
+    assert.strictEqual(overrun, 0, 'the driver is asking for power - this is not overrun');
+
+    const released = new StateSegmenter(DEFAULT_PROFILE);
+    let real = 0;
+    for (let i = 0; i < 200; i++) {
+        if (released.analyze(pedalSample(i * 200, 1600, 60, 0, 0, 50)).state === ST.DECEL_OVERRUN) real++;
+    }
+    assert.ok(real > 150, `pedal released and load gone is overrun, got ${real} of 200`);
+});
+
+test('a floored pedal is a full-load pull even when the throttle reads part-open', () => {
+    const segmenter = new StateSegmenter(DEFAULT_PROFILE);
+    let pull = 0;
+    for (let i = 0; i < 100; i++) {
+        if (segmenter.analyze(pedalSample(i * 200, 3500, 300, 30, 95, 100)).state === ST.WOT_PULL) pull++;
+    }
+    assert.ok(pull > 80, `expected a full-load pull, got ${pull} of 100`);
+});
+
+// ── Exhaust cam ──────────────────────────────────────────────────────────
+
+test('an exhaust cam that never moves is reported on its own', () => {
+    const exhaust = i => (-45 + Math.sin(i / 7) * 0.3).toFixed(2);
+    const report = run(new SyntheticLog(7, ['Exhaust cam (deg)'])
+        .phase({ seconds: 200, rpm: 850, load: 95, tps: 0, speed: 0, coolant: 92, camAdvance: 20, extras: { 'Exhaust cam (deg)': exhaust } })
+        .phase({ seconds: 200, rpm: 2400, load: 200, tps: 25, speed: 80, coolant: 92, camAdvance: 38, extras: { 'Exhaust cam (deg)': exhaust } })
+        .phase({ seconds: 200, rpm: 3800, load: 460, tps: 70, speed: 120, coolant: 95, camAdvance: 45, extras: { 'Exhaust cam (deg)': exhaust } }));
+    assert.ok(has(report, 'ignition.exhaust_cam_stuck'), 'got: ' + titles(report));
+    assert.ok(!has(report, 'ignition.cam_stuck'), 'the intake cam swept normally');
+});
+
+// ── Warning lamps ────────────────────────────────────────────────────────
+
+test('a check engine lamp lit while driving is reported', () => {
+    const report = run(new SyntheticLog(7, ['Check engine', 'EML'])
+        .phase({ seconds: 200, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, extras: { 'Check engine': 0, EML: 0 } })
+        .phase({ seconds: 60, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, extras: { 'Check engine': 1, EML: 0 } }));
+    const f = finding(report, 'ecu.warning_lamp');
+    assert.ok(f, 'expected a warning lamp finding, got: ' + titles(report));
+    assert.strictEqual(f.severity, SEVERITY.MODERATE);
+    assert.strictEqual(f.confidence, CONFIDENCE.HIGH);
+});
+
+test('the EML lamp outranks the check engine lamp', () => {
+    const report = run(new SyntheticLog(7, ['Check engine', 'EML'])
+        .phase({ seconds: 200, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, extras: { 'Check engine': 1, EML: 1 } }));
+    assert.strictEqual(finding(report, 'ecu.warning_lamp').severity, SEVERITY.HIGH);
+});
+
+test('the key-on bulb check is not a warning', () => {
+    // Both lamps light with the key on and the engine stopped.
+    const report = run(new SyntheticLog(7, ['Check engine', 'EML'])
+        .phase({ seconds: 20, rpm: 0, rpmJitter: 0, load: 0, tps: 0, speed: 0, coolant: 92, extras: { 'Check engine': 1, EML: 1 } })
+        .phase({ seconds: 300, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, extras: { 'Check engine': 0, EML: 0 } }));
+    assert.ok(!has(report, 'ecu.warning_lamp'));
+});
+
+// ── AC compressor ────────────────────────────────────────────────────────
+
+test('an idle that only wobbles with the AC compressor running is not a fault', () => {
+    const drive = headers => new SyntheticLog(7, headers)
+        .phase({ seconds: 300, rpm: 800, rpmJitter: 300, load: 115, tps: 0, speed: 0, coolant: 92, extras: { Compressor: 1 } })
+        .phase({ seconds: 150, rpm: 780, rpmJitter: 5, load: 95, tps: 0, speed: 0, coolant: 92, extras: { Compressor: 0 } });
+    // Without the AC state the same idle is rough enough to report...
+    assert.ok(has(run(drive([])), 'idle.unstable'));
+    // ...but it is steady whenever the compressor is off, so the load explains it.
+    assert.ok(!has(run(drive(['Compressor'])), 'idle.unstable'));
+});
+
+test('an idle rough with the AC off as well is reported, with the AC stated', () => {
+    const report = run(new SyntheticLog(7, ['Compressor'])
+        .phase({ seconds: 200, rpm: 800, rpmJitter: 300, load: 115, tps: 0, speed: 0, coolant: 92, extras: { Compressor: 1 } })
+        .phase({ seconds: 200, rpm: 780, rpmJitter: 300, load: 95, tps: 0, speed: 0, coolant: 92, extras: { Compressor: 0 } }));
+    const f = finding(report, 'idle.unstable');
+    assert.ok(f, 'expected an unstable idle finding');
+    assert.ok(f.evidence.some(e => e.label === 'Idle roughness, AC off'));
+    assert.strictEqual(f.confidence, CONFIDENCE.MEDIUM);
+});
+
+// ── Rich at low load ─────────────────────────────────────────────────────
+
+test('fuel removed at low load only reads as an unmetered fuel source', () => {
+    // The mirror of a vacuum leak: a fixed amount of stray fuel.
+    const stray = load => Math.max(-16, -14 * (100 / load));
+    const report = run(new SyntheticLog()
+        .phase({ seconds: 200, rpm: 820, load: 95, tps: 0, speed: 0, coolant: 92, trimAtLoad: stray })
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, trimAtLoad: stray })
+        .phase({ seconds: 200, rpm: 3600, load: 480, tps: 75, speed: 120, coolant: 95, trimAtLoad: stray }));
+    const f = finding(report, 'fuel.rich_low_load');
+    assert.ok(f, 'expected a low-load rich finding, got: ' + titles(report));
+    assert.strictEqual(f.confidence, CONFIDENCE.MEDIUM, 'the converging shape was seen');
+    assert.ok(!has(report, 'fuel.unmetered_air'));
+});
+
+// ── Engine profile ───────────────────────────────────────────────────────
+
+test('an M54 on an MS43 gets its own limits, other engines stay generic', () => {
+    const m54 = CarDoctor.profileFromVehicle({ chassis: 'E36', engine: 'M54B30', ecu: 'MS43' });
+    assert.strictEqual(m54.overheatCoolantC, 115);
+    assert.strictEqual(m54.highLoadThreshold, 550);
+    assert.strictEqual(m54.name, 'E36 M54B30');
+    assert.strictEqual(CarDoctor.profileFromVehicle({ engine: 'M54B30 (MS43)' }).overheatCoolantC, 115);
+
+    const m52 = CarDoctor.profileFromVehicle({ engine: 'M52B28', ecu: 'MS41' });
+    assert.strictEqual(m52.overheatCoolantC, DEFAULT_PROFILE.overheatCoolantC);
+    assert.strictEqual(m52.highLoadThreshold, DEFAULT_PROFILE.highLoadThreshold);
+});
+
+test('an M54 running its map thermostat hot at cruise is not overheating', () => {
+    const log = new SyntheticLog()
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 112 });
+    const m54 = CarDoctor.profileFromVehicle({ engine: 'M54B30', ecu: 'MS43' });
+    assert.ok(!has(run(log, m54), 'cooling.overheat'));
+    assert.ok(has(run(log), 'cooling.overheat'), 'the generic limit still applies to an unknown engine');
+});
+
+// ── ECU snapshot ─────────────────────────────────────────────────────────
+
+const DRIVE_START = '2026-10-27T14:15:00Z';
+const snapshot = extra => Object.assign({
+    takenAt: '2026-10-27T14:50:00Z', dme: '7551615', faults: [],
+    adaptations: { additiveMs: [0.01, -0.01], multiplicativePct: [1.2, 0.8] }, ronAdaptationPct: 0,
+}, extra);
+const withSnapshot = (log, ecu, profile) =>
+    analyze(log.build(), { profile, ecu, logStartedAt: DRIVE_START });
+
+test('without a snapshot the ECU rules stay silent rather than listed as unchecked', () => {
+    const report = run(new SyntheticLog().healthyDrive());
+    const ecuRules = ['ecu.misfire', 'fuel.adaptation', 'ignition.octane_adaptation'];
+    assert.ok(!report.skipped.some(s => ecuRules.includes(s.detectorId)));
+    assert.ok(!report.groups.some(g => g.all.some(f => ecuRules.includes(f.detectorId))));
+    assert.strictEqual(report.overview.ecu, null);
+});
+
+test('a healthy snapshot adds nothing to a healthy drive', () => {
+    const report = withSnapshot(new SyntheticLog().healthyDrive(), snapshot());
+    const significant = report.groups.filter(g => g.severity.rank >= SEVERITY.MODERATE.rank);
+    assert.strictEqual(significant.length, 0, 'got: ' + significant.map(g => g.primary.title).join(', '));
+    assert.ok(report.overview.ecu.hoursFromDrive < 1);
+});
+
+test('stored misfires name their cylinders', () => {
+    const report = withSnapshot(new SyntheticLog().healthyDrive(), snapshot({
+        faults: [{ code: 241, text: 'Misfire Cyl 4' }, { code: 238, text: 'Misfire Cyl 1' }],
+    }));
+    const f = finding(report, 'ecu.misfire');
+    assert.ok(f);
+    assert.strictEqual(f.title, 'Misfire stored: cylinder 1, 4');
+    assert.strictEqual(f.severity, SEVERITY.HIGH);
+    // Handled by the misfire rule, not repeated as an unexplained code.
+    assert.ok(!has(report, 'ecu.stored_faults'));
+});
+
+test('a stored code backs up the finding it explains, and an unrelated one is listed', () => {
+    const leak = load => Math.min(16, 14 * (100 / load));
+    const log = new SyntheticLog()
+        .phase({ seconds: 200, rpm: 820, load: 95, tps: 0, speed: 0, coolant: 92, trimAtLoad: leak })
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, trimAtLoad: leak })
+        .phase({ seconds: 200, rpm: 3600, load: 480, tps: 75, speed: 120, coolant: 95, trimAtLoad: leak });
+    const before = finding(run(log), 'fuel.unmetered_air');
+
+    const report = withSnapshot(log, snapshot({
+        faults: [{ code: 227, text: 'Mixture Deviation Bank 1' }, { code: 36, text: 'DME Main Relay' }],
+    }));
+    const leakFinding = finding(report, 'fuel.unmetered_air');
+    assert.ok(leakFinding.evidence.some(e => e.value.startsWith('227')));
+    assert.ok(leakFinding.confidence.rank > before.confidence.rank ||
+        leakFinding.confidence === CONFIDENCE.HIGH, 'two sources agreeing must raise confidence');
+    const listed = finding(report, 'ecu.stored_faults');
+    assert.ok(listed && listed.evidence.length === 1 && listed.evidence[0].value.startsWith('36'));
+});
+
+function idleInjectionLog() {
+    const injection = i => (2.0 + (i % 3) * 0.01).toFixed(3);
+    return new SyntheticLog(7, ['Injection time (ms)'])
+        .phase({ seconds: 200, rpm: 820, load: 95, tps: 0, speed: 0, coolant: 92, extras: { 'Injection time (ms)': injection } })
+        .phase({ seconds: 400, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92, extras: { 'Injection time (ms)': 4 } });
+}
+
+test('a learned idle correction shows a leak the short-term trims no longer do', () => {
+    // Trims in the log are clean: the ECU has already adapted to the leak.
+    const report = withSnapshot(idleInjectionLog(), snapshot({
+        adaptations: { additiveMs: [0.3, 0.28], multiplicativePct: [1, 1] },
+    }));
+    const f = report.groups.flatMap(g => g.all).find(x => x.detectorId === 'fuel.adaptation');
+    assert.ok(f, 'expected an adaptation finding, got: ' + titles(report));
+    assert.strictEqual(f.causeKey, 'lean-low-load');
+    assert.strictEqual(f.confidence, CONFIDENCE.MEDIUM);
+    assert.ok(f.evidence.some(e => e.label.startsWith('Warm idle injection')));
+});
+
+test('a learned correction from weeks away is reported with low confidence', () => {
+    const report = withSnapshot(idleInjectionLog(), snapshot({
+        takenAt: '2026-08-01T10:00:00Z',
+        adaptations: { additiveMs: [0.3, 0.28], multiplicativePct: [1, 1] },
+    }));
+    const f = report.groups.flatMap(g => g.all).find(x => x.detectorId === 'fuel.adaptation');
+    assert.strictEqual(f.confidence, CONFIDENCE.LOW);
+    assert.ok(f.summary.includes('days from this drive'));
+});
+
+test('a learned correction on one bank only points at that bank', () => {
+    const report = withSnapshot(idleInjectionLog(), snapshot({
+        adaptations: { additiveMs: [0, 0], multiplicativePct: [9, 1] },
+    }));
+    const causes = report.groups.flatMap(g => g.all)
+        .filter(x => x.detectorId === 'fuel.adaptation').map(x => x.causeKey);
+    assert.ok(causes.includes('bank-1'), 'got: ' + causes.join(', '));
+});
+
+test('junk in a snapshot is dropped rather than believed', () => {
+    const ecu = CarDoctor.normalizeEcuSnapshot({
+        takenAt: 'yesterday', faults: [{ code: 'x' }, null, { code: 238 }],
+        adaptations: { additiveMs: ['a', 0.1], multiplicativePct: null }, ronAdaptationPct: 'lots',
+    }, DRIVE_START);
+    assert.strictEqual(ecu.takenAt, null);
+    assert.strictEqual(ecu.hoursFromDrive, null);
+    assert.deepStrictEqual(ecu.faults.map(f => f.code), [238]);
+    assert.deepStrictEqual(ecu.adaptations.additiveMs, [null, 0.1]);
+    assert.deepStrictEqual(ecu.adaptations.multiplicativePct, [null, null]);
+    assert.strictEqual(ecu.ronAdaptationPct, null);
+    assert.strictEqual(CarDoctor.normalizeEcuSnapshot(null), null);
+});
+
+// ── Change over time ─────────────────────────────────────────────────────
+
+const earlier = (day, idleTrim, name = 'drive-' + day) => ({
+    version: 1, logName: name, logStartedAt: `2026-10-${String(day).padStart(2, '0')}T08:00:00Z`,
+    runningSeconds: 900, metrics: { idleTrim: { value: idleTrim, n: 1000 } },
+});
+const creepingIdle = () => new SyntheticLog()
+    .phase({ seconds: 200, rpm: 820, load: 95, tps: 0, speed: 0, coolant: 92, trimAtLoad: () => 6.5 })
+    .phase({ seconds: 300, rpm: 2200, load: 180, tps: 18, speed: 70, coolant: 92 });
+const withHistory = (log, history) =>
+    analyze(log.build(), { history, logName: 'today', logStartedAt: DRIVE_START });
+
+test('every drive leaves a record to compare the next one with', () => {
+    const report = withHistory(new SyntheticLog().healthyDrive(), []);
+    const metrics = report.record.metrics;
+    for (const key of ['idleTrim', 'idleRpm', 'idleRoughness', 'lowLoadTrim', 'cruiseCoolant', 'runningVoltage']) {
+        assert.ok(metrics[key] && Number.isFinite(metrics[key].value), `${key} missing from the record`);
+    }
+    assert.strictEqual(report.record.logName, 'today');
+    // It must survive the trip through JSON, which is how the app stores it.
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(CarDoctor.toPlainReport(report).record)), report.record);
+});
+
+test('an idle trim creeping away from this car\'s own normal is reported', () => {
+    const history = [earlier(1, 0.5), earlier(5, 1.2), earlier(9, 0.8), earlier(14, 1.0), earlier(20, 0.6)];
+    const report = withHistory(creepingIdle(), history);
+    const f = finding(report, 'trend.idleTrim');
+    assert.ok(f, 'expected a drift finding, got: ' + titles(report));
+    assert.strictEqual(f.causeKey, 'lean-low-load');
+    assert.strictEqual(f.confidence, CONFIDENCE.MEDIUM);
+    assert.strictEqual(report.overview.historyDrives, 5);
+});
+
+test('two earlier drives are not yet a normal', () => {
+    const report = withHistory(creepingIdle(), [earlier(1, 0.5), earlier(5, 1.2)]);
+    assert.ok(!has(report, 'trend.idleTrim'));
+});
+
+test('a metric that always varies this much is not a drift', () => {
+    const history = [earlier(1, -6), earlier(5, 7), earlier(9, -4), earlier(14, 5), earlier(20, 0)];
+    assert.ok(!has(withHistory(creepingIdle(), history), 'trend.idleTrim'));
+});
+
+test('the drive itself and later drives never set its baseline', () => {
+    const history = [
+        earlier(1, 0.5), earlier(5, 1.2),
+        earlier(26, 6.5, 'today'),     // this very drive, analysed before
+        earlier(28, 6.4), earlier(29, 6.6), // after it
+    ];
+    const report = withHistory(creepingIdle(), history);
+    assert.strictEqual(report.overview.historyDrives, 2);
+    assert.ok(!has(report, 'trend.idleTrim'));
+});
