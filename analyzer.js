@@ -77,10 +77,13 @@
         // This is a direct measurement of the thing IGNITION_ADVANCE can only be
         // used to infer, so when a log carries it the inferred detector stands down.
         ['KNOCK_CORRECTION', 'Knock correction', 'degCRK', -30, 10, ['knock correction', 'knock cor', 'feedback knock correction', 'knock', 'knock retard', 'fine knock learn', 'knock sum'], PEAK_NEGATIVE],
-        ['CAM_ADVANCE', 'Cam advance', 'deg', -30, 90, ['cam advance', 'intake cam advance', 'vanos', 'avcs', 'vvt', 'cam angle', 'intake cam']],
+        // The MS43 reports its cams as BMW does, against the crankshaft: the
+        // intake from about 60 deg (fully retarded) to 155, the exhaust from
+        // about -60 to -155.
+        ['CAM_ADVANCE', 'Cam advance', 'deg', -30, 160, ['cam advance', 'intake cam advance', 'vanos', 'avcs', 'vvt', 'cam angle', 'intake cam']],
         // The second cam on a double-VANOS engine. Its own channel rather than
         // a CAM_ADVANCE alias, so a log with both keeps both.
-        ['EXHAUST_CAM', 'Exhaust cam', 'deg', -90, 90, ['exhaust cam', 'exhaust cam advance', 'vanos exhaust', 'exhaust vanos']],
+        ['EXHAUST_CAM', 'Exhaust cam', 'deg', -160, 90, ['exhaust cam', 'exhaust cam advance', 'vanos exhaust', 'exhaust vanos']],
         // What the driver asked for, as opposed to where the throttle plate
         // is. On an MS43 the plate stays shut through most light driving
         // while the idle actuator feeds the air, so the throttle reads 0%
@@ -88,6 +91,7 @@
         ['PEDAL', 'Accelerator pedal', '%', 0, 100, ['accelerator pedal', 'accelerator position', 'accel pedal', 'pedal']],
         ['BATTERY_VOLTAGE', 'Battery voltage', 'V', 0, 20, ['battery voltage', 'batt v', 'vbat']],
         ['SYSTEM_VOLTAGE', 'System voltage', 'V', 0, 20, ['input v', 'system voltage', 'supply voltage', 'ecu voltage']],
+        ['BARO', 'Air pressure', 'hPa', 500, 1100, ['air pressure', 'barometric pressure', 'ambient pressure', 'baro']],
         ['FUEL_RATE', 'Fuel rate', 'l/h', 0, 100, ['fuel usage', 'fuel rate', 'fuel flow']],
         ['ACCEL_X', 'Accel X', 'g', -5, 5, ['accel x', 'acceleration x', 'g x']],
         ['ACCEL_Y', 'Accel Y', 'g', -5, 5, ['accel y', 'acceleration y', 'g y']],
@@ -2975,12 +2979,23 @@
      *   {
      *     takenAt: '2026-10-27T14:40:00+05:30',
      *     dme: '7551615',                                  // optional
-     *     faults: [{ code: 238, text: 'Misfire Cyl 1' }],  // stored fault memory
+     *     faults: [{                                         // stored fault memory
+     *       code: 238, text: 'Misfire Cyl 1',
+     *       frequency: 3, presentNow: false,                 // optional
+     *       types: ['...'], conditions: ['...'],             // optional, BMW's texts
+     *     }],
      *     adaptations: {                                    // null when not readable
      *       additiveMs: [bank1, bank2],        // learned idle fuel, injection ms
      *       multiplicativePct: [bank1, bank2], // learned fuel at every load, %
      *     },
+     *     idleAdaptationPct: { neutral, inGear, ac },  // learned idle air, optional
      *     ronAdaptationPct: 0,  // how far the ECU moved toward its low-octane map
+     *     misfire: {                            // optional, index 0 = cylinder 1
+     *       counts: [0, 0, 0, 0, 0, 0],         // misfires counted toward catalyst damage
+     *       roughness: [0, 0, 0, 0, 0, 0],      // rough running per cylinder
+     *     },
+     *     digital: { acRequest, compressorRelay, closedLoopBank1, closedLoopBank2,
+     *                purgeValve, checkEngine, ... },  // optional on/off states
      *   }
      *
      * The log shows what the ECU corrected during one drive. The adaptations
@@ -2995,17 +3010,38 @@
         const pair = v => (Array.isArray(v) ? [num(v[0]), num(v[1])] : [null, null]);
         const taken = Date.parse(raw.takenAt);
         const started = Date.parse(logStartedAt);
-        const adaptations = raw.adaptations && typeof raw.adaptations === 'object'
+        const object = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+        const strings = v => (Array.isArray(v) ? v.filter(x => typeof x === 'string' && x) : []);
+        const six = (v, ok) => (Array.isArray(v) && v.length === 6 && v.every(ok) ? v.slice() : null);
+        const adaptations = object(raw.adaptations)
             ? { additiveMs: pair(raw.adaptations.additiveMs), multiplicativePct: pair(raw.adaptations.multiplicativePct) }
             : null;
+        const idle = object(raw.idleAdaptationPct);
+        const misfire = object(raw.misfire);
+        const counts = misfire && six(misfire.counts, x => Number.isInteger(x) && x >= 0);
+        const digital = object(raw.digital);
         return {
             takenAt: Number.isNaN(taken) ? null : new Date(taken).toISOString(),
             dme: raw.dme ? String(raw.dme) : null,
             faults: (Array.isArray(raw.faults) ? raw.faults : [])
                 .filter(f => f && Number.isInteger(f.code))
-                .map(f => ({ code: f.code, text: f.text ? String(f.text) : 'fault ' + f.code })),
+                .map(f => ({
+                    code: f.code,
+                    text: f.text ? String(f.text) : 'fault ' + f.code,
+                    frequency: Number.isInteger(f.frequency) ? f.frequency : null,
+                    presentNow: typeof f.presentNow === 'boolean' ? f.presentNow : null,
+                    types: strings(f.types),
+                    conditions: strings(f.conditions),
+                })),
             adaptations,
+            idleAdaptationPct: idle && [idle.neutral, idle.inGear, idle.ac].some(v => num(v) !== null)
+                ? { neutral: num(idle.neutral), inGear: num(idle.inGear), ac: num(idle.ac) } : null,
             ronAdaptationPct: num(raw.ronAdaptationPct),
+            misfire: counts ? {
+                counts,
+                roughness: six(misfire.roughness, x => num(x) !== null),
+            } : null,
+            digital: digital ? Object.fromEntries(Object.entries(digital).filter(([, v]) => typeof v === 'boolean')) : null,
             // How far from the drive the snapshot was taken, either side. Null
             // when either time is unknown.
             hoursFromDrive: (Number.isNaN(taken) || Number.isNaN(started))
@@ -3021,6 +3057,20 @@
         return ecu.hoursFromDrive < 1 ? 'taken within the hour of this drive'
             : ecu.hoursFromDrive < 48 ? 'taken ' + Math.round(ecu.hoursFromDrive) + ' h from this drive'
             : 'taken ' + Math.round(ecu.hoursFromDrive / 24) + ' days from this drive';
+    }
+
+    /**
+     * A stored fault as evidence: the code and text first (so it reads like
+     * INPA's list), then what the ECU stored with it when it has.
+     */
+    function faultLabel(f) {
+        const parts = [];
+        if (f.presentNow === true) parts.push('present now');
+        else if (f.presentNow === false) parts.push('not present now');
+        if (f.frequency) parts.push('occurred ' + f.frequency + 'x');
+        if (f.types && f.types.length) parts.push(f.types[0]);
+        if (f.conditions && f.conditions.length) parts.push('stored at ' + f.conditions.join(', '));
+        return f.code + ': ' + f.text + (parts.length ? ' (' + parts.join('; ') + ')' : '');
     }
 
     /** MS4x fault codes for a misfire on cylinders 1 to 6. */
@@ -3056,7 +3106,9 @@
     /**
      * Misfires the ECU has counted and stored. The log has no per-cylinder
      * data, so this is the only place a misfire on a named cylinder can come
-     * from.
+     * from: a stored misfire fault, or the counters the ECU keeps per
+     * cylinder toward catalyst damage (any count at all is a misfire it saw,
+     * though not yet one it stored as a fault).
      */
     const StoredMisfireDetector = {
         id: 'ecu.misfire',
@@ -3070,20 +3122,28 @@
         evaluate(summary, ctx) {
             const ecu = summary.ecu;
             const misfires = ecu.faults.filter(f => MISFIRE_CODES.has(f.code));
-            if (misfires.length === 0) return null;
-            const cylinders = [...new Set(misfires.map(f => MISFIRE_CODES.get(f.code)))].sort();
+            const counts = ecu.misfire ? ecu.misfire.counts : [0, 0, 0, 0, 0, 0];
+            const counted = counts.map((n, i) => (n > 0 ? i + 1 : 0)).filter(Boolean);
+            if (misfires.length === 0 && counted.length === 0) return null;
+            const stored = misfires.length > 0;
+            const cylinders = [...new Set([...misfires.map(f => MISFIRE_CODES.get(f.code)), ...counted])]
+                .sort((a, b) => a - b);
+            const counterEvidence = counted.map(c => evidence('Misfire counter, cylinder ' + c,
+                counts[c - 1] + (ecu.misfire.roughness
+                    ? ', rough running ' + ctx.fmt(ecu.misfire.roughness[c - 1], 2) : '')));
             return {
                 detectorId: this.id,
-                title: 'Misfire stored: cylinder ' + cylinders.join(', '),
+                title: (stored ? 'Misfire stored: cylinder ' : 'Misfires counted: cylinder ') + cylinders.join(', '),
                 subSystem: this.subSystem,
-                severity: SEVERITY.HIGH,
-                confidence: CONFIDENCE.HIGH,
-                summary: 'The ECU has stored a misfire on cylinder ' + cylinders.join(', ') + ' (snapshot ' +
-                    snapshotAge(ecu) + '). ' + (cylinders.length === 1
+                severity: stored ? SEVERITY.HIGH : SEVERITY.MODERATE,
+                confidence: stored ? CONFIDENCE.HIGH : CONFIDENCE.MEDIUM,
+                summary: (stored ? 'The ECU has stored a misfire on cylinder ' : 'The ECU has counted misfires on cylinder ') +
+                    cylinders.join(', ') + ' (snapshot ' + snapshotAge(ecu) + ')' +
+                    (stored ? '. ' : ', not yet enough to store a fault. ') + (cylinders.length === 1
                         ? 'One cylinder points at that cylinder\'s coil, plug or injector.'
                         : 'Several cylinders together point at something they share: fuel pressure, a vacuum ' +
                           'leak or a crankshaft sensor.'),
-                evidence: misfires.map(f => evidence('Stored fault', f.code + ': ' + f.text)),
+                evidence: misfires.map(f => evidence('Stored fault', faultLabel(f))).concat(counterEvidence),
                 suggestedChecks: [
                     'Swap the coil of the misfiring cylinder with a neighbour and see if the misfire follows it',
                     'Inspect that cylinder\'s spark plug',
@@ -3281,7 +3341,19 @@
      */
     function applyFaultCodes(result) {
         const ecu = result.summary.ecu;
-        if (!ecu || ecu.faults.length === 0) return result;
+        if (!ecu) return result;
+        // The learned idle air backs up an idle finding: the ECU has had to
+        // add (or take away) air to hold idle, which a leak or a dirty valve does.
+        const idle = ecu.idleAdaptationPct;
+        const fmtPct = v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+        if (idle && idle.neutral !== null) {
+            for (const finding of result.findings.filter(f => f.causeKey === 'idle')) {
+                finding.evidence.push(evidence('Learned idle air (ECU)', 'neutral ' + fmtPct(idle.neutral) +
+                    (idle.inGear !== null ? ', in gear ' + fmtPct(idle.inGear) : '') +
+                    (idle.ac !== null ? ', AC on ' + fmtPct(idle.ac) : '')));
+            }
+        }
+        if (ecu.faults.length === 0) return result;
         const unexplained = [];
         for (const fault of ecu.faults) {
             const link = FAULT_LINKS.find(l => l.codes.includes(fault.code));
@@ -3289,7 +3361,7 @@
                 ? result.findings.filter(f => link.causeKeys.includes(f.causeKey) && f.detectorId !== StoredMisfireDetector.id)
                 : [];
             for (const finding of supported) {
-                finding.evidence.push(evidence('Stored fault code', fault.code + ': ' + fault.text));
+                finding.evidence.push(evidence('Stored fault code', faultLabel(fault)));
                 finding.confidence = raiseConfidence(finding.confidence);
             }
             if (supported.length === 0 && !MISFIRE_CODES.has(fault.code)) unexplained.push(fault);
@@ -3305,7 +3377,7 @@
                     (unexplained.length === 1 ? 'a fault' : 'faults') + ' that nothing in this log speaks to ' +
                     'either way. ' + (unexplained.length === 1 ? 'It' : 'They') +
                     ' may be old, intermittent, or outside what the log records.',
-                evidence: unexplained.map(f => evidence('Stored fault code', f.code + ': ' + f.text)),
+                evidence: unexplained.map(f => evidence('Stored fault code', faultLabel(f))),
                 suggestedChecks: [
                     'Look up each code and check its wiring and component',
                     'Clear the codes, drive, and read them again to see which come back',
@@ -3813,7 +3885,8 @@
         if (o.ecu) {
             lines.push('ECU snapshot      : ' + snapshotAge(o.ecu) + (o.ecu.dme ? ', DME ' + o.ecu.dme : '') +
                 ', ' + o.ecu.faults.length + ' stored fault(s)' +
-                (o.ecu.adaptations ? ', fuel adaptations read' : ''));
+                (o.ecu.adaptations ? ', fuel adaptations read' : '') +
+                (o.ecu.misfire ? ', misfire counters read' : ''));
         }
         if (o.historyDrives > 0) {
             lines.push('Earlier drives    : ' + o.historyDrives + ' compared for changes');
